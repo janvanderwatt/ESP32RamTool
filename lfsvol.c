@@ -96,13 +96,52 @@ uint32_t lfs_crc(uint32_t crc, const void *buffer, size_t size)
 }
 
 /* --------------------------------------------------------------------------
- * Block device
+ * Block device, and the write lock
  *
- * Read is the only operation that matters. prog and erase fail loudly rather
- * than pretending to succeed: a silent success would let a read-only payload
- * appear to have modified flash, which is precisely the property this whole
- * project exists to preserve.
+ * Reading is unrestricted. Writing is not, and the restriction is here rather
+ * than in the command layer on purpose: this is the only code in the payload
+ * that can destroy the contents of the chip, so it should not depend on every
+ * caller remembering to check first.
+ *
+ * Two things must both hold before a byte is programmed or a sector erased:
+ *
+ *   1. lfsvol_write_enable has been called, naming a region. It lives in .bss,
+ *      so it does not survive a reboot -- re-locking is the default.
+ *
+ *   2. The address falls inside that region. This is not belt and braces, it is
+ *      the important half. littlefs takes block_count from the superblock,
+ *      because lfs_mount is handed block_count 0 so it will read the real value
+ *      off the disk. That is convenient for mounting and dangerous for writing:
+ *      a corrupt or hostile superblock claiming block_count 100000 at
+ *      block_size 4096 describes 400 MB, and every one of those blocks would
+ *      otherwise be a legal erase. Clamping to the partition size the scan
+ *      actually reported keeps a bad superblock from reaching past the volume.
+ *
+ *      This is also why an explicit offset cannot simply be unlocked on its
+ *      own: with no partition size there is nothing to clamp against, so
+ *      lfsvol_write_enable refuses that combination rather than guessing.
  * ------------------------------------------------------------------------ */
+
+/* The unlocked region. wr_size of 0 means locked, which also makes "unknown
+ * size" unrepresentable -- see lfsvol_write_enable. */
+static uint32_t wr_base;
+static uint32_t wr_size;
+static lfs_size_t wr_block_size;
+
+static int write_permitted(uint32_t addr, uint32_t len)
+{
+    if (wr_size == 0) {
+        return 0;
+    }
+    if (addr < wr_base) {
+        return 0;
+    }
+    /* Written as a subtraction so a huge len cannot wrap the comparison. */
+    if (len > (wr_base + wr_size) - addr) {
+        return 0;
+    }
+    return 1;
+}
 
 static int bd_read(const struct lfs_config *c, lfs_block_t block,
                    lfs_off_t off, void *dst, lfs_size_t len)
@@ -123,14 +162,35 @@ static int bd_read(const struct lfs_config *c, lfs_block_t block,
 static int bd_prog(const struct lfs_config *c, lfs_block_t block,
                    lfs_off_t off, const void *src, lfs_size_t len)
 {
-    (void)c; (void)block; (void)off; (void)src; (void)len;
-    return LFS_ERR_IO; /* read-only by design */
+    uint32_t addr = (uint32_t)c->context + (uint32_t)block * c->block_size + off;
+
+    if (!write_permitted(addr, (uint32_t)len)) {
+        return LFS_ERR_IO;
+    }
+    /* The ROM wants a uint32_t source. littlefs hands over a whole number of
+     * prog_size units, 16 here, so the buffer is always 4-byte aligned and the
+     * length always a multiple of 4. */
+    if (esp_rom_spiflash_write(addr, (const uint32_t *)src, (int32_t)len) != 0) {
+        return LFS_ERR_IO;
+    }
+    return 0;
 }
 
 static int bd_erase(const struct lfs_config *c, lfs_block_t block)
 {
-    (void)c; (void)block;
-    return LFS_ERR_IO; /* read-only by design */
+    uint32_t addr = (uint32_t)c->context + (uint32_t)block * c->block_size;
+
+    if (!write_permitted(addr, (uint32_t)c->block_size)) {
+        return LFS_ERR_IO;
+    }
+    /* erase_area takes an address and a length, not a sector number. Assuming
+     * block_size == sector size, which holds for the volumes seen here. A
+     * volume with sub-sector blocks would need the containing sector erased,
+     * and would need write_permitted widened to match. */
+    if (esp_rom_spiflash_erase_area(addr, (uint32_t)c->block_size) != 0) {
+        return LFS_ERR_IO;
+    }
+    return 0;
 }
 
 static int bd_sync(const struct lfs_config *c)
@@ -342,17 +402,31 @@ static int lfsvol_try_mount(uint32_t base, lfs_size_t block_size)
     return lfs_mount(&lfsvol_fs, &lfsvol_cfg);
 }
 
-/* Try every candidate partition and block size until one mounts. The winning
- * partition is reported back so the caller can name it. Returns 0 or an error.
+/* Locate a mountable volume, trying every candidate partition and block size
+ * until one works.
+ *
+ * Nothing is left mounted: the winning offset and block size are reported and
+ * the caller mounts deliberately. That matters for the write path, which has to
+ * know where the volume is before it can decide whether writing is allowed, and
+ * a lookup that leaves a filesystem open behind it is poor form regardless.
+ *
+ * `psize` receives the partition size when the volume came from the partition
+ * table, and 0 when the caller named an offset directly. Only `psize` bounds
+ * writes, so a 0 here is what makes an unlocked explicit offset impossible.
  *
  * Trying everything is not as wasteful as it sounds: a failed mount reads only a
  * handful of metadata blocks over SPI, and there are at most a few partitions
- * worth trying. It also means the command works without being told where the
+ * worth trying. It also means the commands work without being told where the
  * filesystem is, which matters when the partition is labelled SPIFFS but holds
- * a littlefs image. */
-static int lfsvol_find_and_mount(uint32_t force_base, struct lfsvol_part *found)
+ * a littlefs image.
+ *
+ * Returns 0, or the last error seen. */
+static int lfsvol_locate(uint32_t force_base, uint32_t *out_off,
+                         lfs_size_t *out_bsize, uint32_t *out_psize,
+                         struct lfsvol_part *out_part)
 {
     struct lfsvol_part parts[PART_TABLE_MAX_ENTRIES];
+    int nbs = (int)(sizeof(lfsvol_block_sizes) / sizeof(lfsvol_block_sizes[0]));
     int n;
     int i;
     int pass;
@@ -360,18 +434,21 @@ static int lfsvol_find_and_mount(uint32_t force_base, struct lfsvol_part *found)
 
     lfsvol_flash_init();
 
-    /* An explicit base overrides discovery entirely, which makes the command
+    /* An explicit base overrides discovery entirely, which makes the commands
      * usable on a layout this scan has never seen. */
     if (force_base != 0) {
-        for (i = 0; i < (int)(sizeof(lfsvol_block_sizes) /
-                              sizeof(lfsvol_block_sizes[0])); i++) {
+        for (i = 0; i < nbs; i++) {
             if (lfsvol_try_mount(force_base, lfsvol_block_sizes[i]) == 0) {
-                if (found) {
-                    found->offset = force_base;
-                    found->size = 0; /* not known from a table */
-                    found->type = 0xff;
-                    found->subtype = 0xff; /* unknown / user supplied */
-                    found->label[0] = '\0';
+                (void)lfs_unmount(&lfsvol_fs);
+                *out_off = force_base;
+                *out_bsize = lfsvol_block_sizes[i];
+                *out_psize = 0; /* unknown: not from a table */
+                if (out_part) {
+                    out_part->offset = force_base;
+                    out_part->size = 0;
+                    out_part->type = 0xff;
+                    out_part->subtype = 0xff; /* unknown / user supplied */
+                    out_part->label[0] = '\0';
                 }
                 return 0;
             }
@@ -397,12 +474,15 @@ static int lfsvol_find_and_mount(uint32_t force_base, struct lfsvol_part *found)
                 continue;
             }
 
-            for (b = 0; b < (int)(sizeof(lfsvol_block_sizes) /
-                                  sizeof(lfsvol_block_sizes[0])); b++) {
+            for (b = 0; b < nbs; b++) {
                 int e = lfsvol_try_mount(parts[i].offset, lfsvol_block_sizes[b]);
                 if (e == 0) {
-                    if (found) {
-                        *found = parts[i];
+                    (void)lfs_unmount(&lfsvol_fs);
+                    *out_off = parts[i].offset;
+                    *out_bsize = lfsvol_block_sizes[b];
+                    *out_psize = parts[i].size;
+                    if (out_part) {
+                        *out_part = parts[i];
                     }
                     return 0;
                 }
@@ -411,6 +491,12 @@ static int lfsvol_find_and_mount(uint32_t force_base, struct lfsvol_part *found)
         }
     }
     return err;
+}
+
+/* Mount a volume located by lfsvol_locate. */
+static int lfsvol_mount_at(uint32_t off, lfs_size_t bsize)
+{
+    return lfsvol_try_mount(off, bsize);
 }
 
 /* --------------------------------------------------------------------------
@@ -437,10 +523,17 @@ int lfsvol_list(uint32_t base, const char *path, lfsvol_visit_fn visit,
     struct lfs_dir dir;
     struct lfs_info info;
     struct lfsvol_part found;
+    uint32_t off;
+    uint32_t psize;
+    lfs_size_t bsize;
     int err;
     int count = 0;
 
-    err = lfsvol_find_and_mount(base, &found);
+    err = lfsvol_locate(base, &off, &bsize, &psize, &found);
+    if (err) {
+        return err;
+    }
+    err = lfsvol_mount_at(off, bsize);
     if (err) {
         return err;
     }
@@ -476,6 +569,220 @@ int lfsvol_list(uint32_t base, const char *path, lfsvol_visit_fn visit,
 }
 
 /* --------------------------------------------------------------------------
+ * File access
+ *
+ * Every entry point here mounts, does one thing, and unmounts. That is
+ * wasteful in principle and right in practice: an unmounted filesystem holds no
+ * state on the flash, so a command that dies partway through cannot leave the
+ * volume needing repair on the next boot. There is no long-lived session to
+ * lose.
+ *
+ * One buffer each, both cache_size, both reused:
+ *   file_buf  littlefs's per-open-file cache, which lfs_file_opencfg demands
+ *   io_buf    the transfer buffer between littlefs and the console
+ * ------------------------------------------------------------------------ */
+
+static uint8_t lfsvol_file_buf[LFSVOL_CACHE_SIZE];
+static uint8_t lfsvol_io_buf[LFSVOL_CACHE_SIZE];
+
+/* Open a file with our own buffer.
+ *
+ * lfs_file_open is not merely discouraged here, it does not exist: lfs.c guards
+ * it with #ifndef LFS_NO_MALLOC, so under our flags the symbol is absent and the
+ * link fails outright. lfs.h says as much -- "lfs_file_open() will fail with
+ * LFS_ERR_NOMEM, thus use lfs_file_opencfg() with config.buffer set". The buffer
+ * wants cache_size bytes, the same size as the mount caches.
+ *
+ * Zeroing the config matters: attr_count 0 is what littlefs checks to decide
+ * there are no attributes to look for. */
+static int lfsvol_open(lfs_file_t *f, const char *path, int flags)
+{
+    struct lfs_file_config fc;
+
+    memset(&fc, 0, sizeof(fc));
+    fc.buffer = lfsvol_file_buf;
+    return lfs_file_opencfg(&lfsvol_fs, f, path, flags, &fc);
+}
+
+int lfsvol_cat(uint32_t base, const char *path, lfsvol_line_fn line, void *ctx)
+{
+    struct lfsvol_part found;
+    uint32_t off;
+    uint32_t psize;
+    lfs_size_t bsize;
+    lfs_file_t f;
+    int err;
+    int total = 0;
+
+    err = lfsvol_locate(base, &off, &bsize, &psize, &found);
+    if (err) {
+        return err;
+    }
+    err = lfsvol_mount_at(off, bsize);
+    if (err) {
+        return err;
+    }
+
+    err = lfsvol_open(&f, path, LFS_O_RDONLY);
+    if (err) {
+        lfs_unmount(&lfsvol_fs);
+        return err;
+    }
+
+    for (;;) {
+        lfs_ssize_t n = lfs_file_read(&lfsvol_fs, &f, lfsvol_io_buf,
+                                      sizeof(lfsvol_io_buf));
+        if (n < 0) {
+            err = (int)n;
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        line(ctx, (const char *)lfsvol_io_buf, (uint32_t)n);
+        total += (int)n;
+    }
+
+    (void)lfs_file_close(&lfsvol_fs, &f);
+    lfs_unmount(&lfsvol_fs);
+    return (err < 0) ? err : total;
+}
+
+/* --------------------------------------------------------------------------
+ * The write lock
+ * ------------------------------------------------------------------------ */
+
+int lfsvol_write_enable(uint32_t base, uint32_t size)
+{
+    struct lfsvol_part found;
+    uint32_t off;
+    uint32_t psize;
+    lfs_size_t bsize;
+    int err;
+
+    err = lfsvol_locate(base, &off, &bsize, &psize, &found);
+    if (err) {
+        return err;
+    }
+
+    /* An explicit offset with no size is refused rather than guessed. The clamp
+     * in write_permitted is the only thing standing between a bad superblock
+     * and an erased application, so a region with no known end is not something
+     * to hand out. */
+    if (base != 0) {
+        if (size == 0) {
+            return LFSVOL_ERR_LOCKED;
+        }
+        psize = size;
+    }
+    if (psize == 0) {
+        return LFSVOL_ERR_LOCKED;
+    }
+
+    /* Round the region down to a whole number of blocks. littlefs will not
+     * touch the tail, but keeping the boundary on a block edge means the clamp
+     * can never disagree with littlefs about where the volume ends. */
+    wr_size = (psize / bsize) * bsize;
+    if (wr_size == 0) {
+        return LFSVOL_ERR_LOCKED;
+    }
+
+    wr_base = off;
+    wr_block_size = bsize;
+    return 0;
+}
+
+void lfsvol_write_disable(void)
+{
+    wr_base = 0;
+    wr_size = 0;
+}
+
+int lfsvol_write_region(uint32_t *base, uint32_t *size)
+{
+    if (base) {
+        *base = wr_base;
+    }
+    if (size) {
+        *size = wr_size;
+    }
+    return (wr_size != 0) ? 1 : 0;
+}
+
+/* Mount the unlocked region, or explain why not. Shared by the three mutators
+ * so none of them can forget the check. */
+static int lfsvol_mount_unlocked(void)
+{
+    if (wr_size == 0) {
+        return LFSVOL_ERR_LOCKED;
+    }
+    return lfsvol_mount_at(wr_base, wr_block_size);
+}
+
+/* Write one line, creating the file if needed. `flags` chooses replace or
+ * append. */
+static int lfsvol_write_line(const char *path, const char *text, int flags)
+{
+    lfs_file_t f;
+    lfs_ssize_t n;
+    int err;
+
+    err = lfsvol_mount_unlocked();
+    if (err) {
+        return err;
+    }
+
+    err = lfsvol_open(&f, path, flags | LFS_O_WRONLY | LFS_O_CREAT);
+    if (err) {
+        lfs_unmount(&lfsvol_fs);
+        return err;
+    }
+
+    n = lfs_file_write(&lfsvol_fs, &f, text, strlen(text));
+    if (n < 0) {
+        err = (int)n;
+    } else {
+        /* One line means one newline, added here so callers cannot forget it
+         * and cannot accidentally write a file with no line structure. */
+        n = lfs_file_write(&lfsvol_fs, &f, "\n", 1);
+        err = (n < 0) ? (int)n : 0;
+    }
+
+    /* Close either way: on the error path it is what flushes the cache and, more
+     * importantly, is where littlefs would report a deferred failure. */
+    {
+        int cerr = lfs_file_close(&lfsvol_fs, &f);
+        if (err == 0 && cerr < 0) {
+            err = cerr;
+        }
+    }
+
+    lfs_unmount(&lfsvol_fs);
+    return err;
+}
+
+int lfsvol_put(const char *path, const char *text)
+{
+    return lfsvol_write_line(path, text, LFS_O_TRUNC);
+}
+
+int lfsvol_add(const char *path, const char *text)
+{
+    return lfsvol_write_line(path, text, LFS_O_APPEND);
+}
+
+int lfsvol_rm(const char *path)
+{
+    int err = lfsvol_mount_unlocked();
+    if (err) {
+        return err;
+    }
+    err = lfs_remove(&lfsvol_fs, path);
+    lfs_unmount(&lfsvol_fs);
+    return err;
+}
+
+/* --------------------------------------------------------------------------
  * Error strings
  *
  * littlefs's own LFS_ERROR would be the obvious route, but it expands to printf
@@ -487,6 +794,9 @@ const char *lfsvol_strerror(int err)
 {
     if (err >= 0) {
         return "ok";
+    }
+    if (err == LFSVOL_ERR_LOCKED) {
+        return "writing is locked; 'rw on' first";
     }
     /* Switch on err itself, not on -err: the case labels are the negative enum
      * values, so negating here silently falls through to "unknown" for every

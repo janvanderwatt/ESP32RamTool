@@ -1,20 +1,24 @@
-/* Read-only littlefs access, straight off SPI flash.
+/* Read and write a littlefs volume straight off SPI flash.
  *
  * The payload has no ESP-IDF, no VFS and no filesystem at all, so anything that
  * wants to see files on the chip has to talk to littlefs directly. That is
  * entirely doable: littlefs is a portable C library that needs a block device,
  * a CRC, and some buffers, and the ROM already knows how to read SPI flash.
  *
- * What this module provides is deliberately small:
+ * What this module provides:
  *
- *   - a read-only block device over the ROM's flash reader
+ *   - a block device over the ROM's flash reader and writer
  *   - the one function littlefs expects the host to supply, lfs_crc
- *   - partition-table scanning, so 'ls' finds the filesystem on its own
- *   - a directory walk that hands each entry to a callback
+ *   - partition-table scanning, so commands find the filesystem on their own
+ *   - directory walking, whole-file reading, single-line writing, and removal
  *
- * There is no writing. See the notes on lfs_crc and on the return convention of
- * lfs_dir_read below; both cost real debugging time and both are easy to get
- * wrong again.
+ * Writing is gated. See lfsvol_write_enable before implementing anything that
+ * erases flash; the short version is that this is the one part of the tool that
+ * can destroy what is on the chip, so it does nothing until it is told exactly
+ * which bytes it is allowed to touch.
+ *
+ * See the notes at the top of lfsvol.c. Four of them are traps that all
+ * present as something other than what they are.
  */
 
 #ifndef RAMTOOL_LFSVOL_H
@@ -22,8 +26,14 @@
 
 #include <stdint.h>
 
-/* Called once per directory entry with the name and size. "." and ".." are
- * filtered out before the callback sees them. */
+/* Returned by the write calls when no write region has been unlocked. Chosen
+ * well below any littlefs error code so the two can never be confused. */
+#define LFSVOL_ERR_LOCKED (-1000)
+
+/* Called once per entry with a chunk of file content. */
+typedef void (*lfsvol_line_fn)(void *ctx, const char *buf, uint32_t len);
+
+/* Called once per directory entry. "." and ".." are filtered out first. */
 typedef void (*lfsvol_visit_fn)(void *ctx, const char *name, uint32_t size,
                                 int is_dir);
 
@@ -31,6 +41,8 @@ typedef void (*lfsvol_visit_fn)(void *ctx, const char *name, uint32_t size,
  * application slot and 0x01 for a data partition; `subtype` refines that. */
 typedef void (*lfsvol_part_fn)(void *ctx, const char *label, uint32_t offset,
                                uint32_t size, uint8_t type, uint8_t subtype);
+
+/* ---------------------------------------------------------------- reading */
 
 /* Mount the filesystem, list `path`, unmount.
  *
@@ -43,12 +55,49 @@ typedef void (*lfsvol_part_fn)(void *ctx, const char *label, uint32_t offset,
 int lfsvol_list(uint32_t base, const char *path, lfsvol_visit_fn visit,
                 void *ctx);
 
+/* Read a whole file, handing each chunk to `line`. Returns the number of bytes
+ * emitted, or a negative error code. Reading needs no unlock. */
+int lfsvol_cat(uint32_t base, const char *path, lfsvol_line_fn line, void *ctx);
+
 /* Walk the partition table, calling `fn` for each entry. Returns the number of
- * entries reported. Shares the scanner with the 'ls' discovery path. */
+ * entries reported. Shares the scanner with the discovery path. */
 int lfsvol_partitions(lfsvol_part_fn fn, void *ctx);
 
-/* A short description of a negative littlefs error code, for messages.
- * Never returns NULL. */
+/* ---------------------------------------------------------------- writing */
+
+/* Unlock writing, and only within [base, base + size).
+ *
+ * base 0 means "find the filesystem the usual way" and use its partition size.
+ * An explicit base MUST be given with an explicit size, because without one
+ * there is no way to know where the volume stops and the clamp below would have
+ * nothing to clamp against; that combination is refused.
+ *
+ * The region survives until lfsvol_write_disable, and does not survive a
+ * reboot, since it lives in .bss.
+ *
+ * Returns 0 if writing is now permitted, or a negative error code. */
+int lfsvol_write_enable(uint32_t base, uint32_t size);
+
+/* Re-lock. Safe to call when already locked. */
+void lfsvol_write_disable(void);
+
+/* Report the unlocked region. Returns 1 if writes are permitted, 0 if not. */
+int lfsvol_write_region(uint32_t *base, uint32_t *size);
+
+/* Write one line (a trailing newline is added) to `path`, replacing any
+ * existing content and creating the file if absent. */
+int lfsvol_put(const char *path, const char *text);
+
+/* Append one line to `path`, creating the file if absent. */
+int lfsvol_add(const char *path, const char *text);
+
+/* Delete `path`. Fails if it is a directory or does not exist. */
+int lfsvol_rm(const char *path);
+
+/* --------------------------------------------------------------- messages */
+
+/* A short description of a negative error code, for messages. Never NULL.
+ * Accepts both littlefs codes and LFSVOL_ERR_LOCKED. */
 const char *lfsvol_strerror(int err);
 
 #endif /* RAMTOOL_LFSVOL_H */

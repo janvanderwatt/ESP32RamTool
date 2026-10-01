@@ -59,7 +59,10 @@ static void print_hex32(uint32_t v, int digits)
 
 /* ------------------------------------------------------------- line editor */
 
-#define LINE_MAX 64
+/* Sized for the longest line we want to be able to type at once. It went from
+ * 64 to 200 when file writing arrived, because a 64-character line is a
+ * reasonable register poke and a cramped log entry. */
+#define LINE_MAX 200
 
 static char line[LINE_MAX];
 static uint32_t line_len;
@@ -494,6 +497,186 @@ static void cmd_ls(const char *p)
     }
 }
 
+/* Pull a path off the front of the line. Paths cannot contain spaces here,
+ * because the console splits on whitespace and there is no quoting; a name with
+ * a space in it is simply not addressable. Returns 0 if there was no path. */
+static int take_path(const char **pp, char *out, int out_max)
+{
+    const char *p = *pp;
+    int i = 0;
+
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    if (*p == '\0' || *p == '/') {
+        return 0; /* a bare '/' is the root, not a filename */
+    }
+    while (*p && *p != ' ' && *p != '\t') {
+        if (i + 1 >= out_max) {
+            return 0; /* too long to be a plausible name; refuse rather than
+                        * silently truncate into a different file */
+        }
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+    *pp = p;
+    return 1;
+}
+
+#define PATH_MAX 64
+
+static void report(const char *what, int err)
+{
+    puts_(what);
+    puts_(": ");
+    puts_(lfsvol_strerror(err));
+    puts_(" (");
+    print_u32((uint32_t)(-err));
+    puts_(")\n");
+}
+
+/* rw [on|off|@<offset> <size>]
+ *
+ * Writing is gated because it is the only thing here that can destroy what is
+ * on the chip. The lock lives in lfsvol's block device rather than here, so a
+ * mistake in this file cannot turn into an erase. */
+static void cmd_rw(const char *p)
+{
+    uint32_t base = 0;
+    uint32_t size = 0;
+    uint32_t rb;
+    uint32_t rs;
+    int err;
+
+    skip_space(&p);
+
+    if (*p == '\0') {
+        if (lfsvol_write_region(&rb, &rs)) {
+            puts_("writing enabled, 0x");
+            print_hex32(rb, 8);
+            puts_(" + 0x");
+            print_hex32(rs, 8);
+            putch_('\n');
+        } else {
+            puts_("writing locked\n");
+        }
+        return;
+    }
+
+    if (word_is(&p, "off")) {
+        lfsvol_write_disable();
+        puts_("writing locked\n");
+        return;
+    }
+
+    if (!word_is(&p, "on")) {
+        puts_("usage: rw [on|off|@<offset> <size>]\n");
+        return;
+    }
+
+    /* An explicit region has to be given a size, because lfsvol refuses to
+     * unlock a region whose end is unknown. */
+    if (*p == '@') {
+        p++;
+        base = parse_u32(&p);
+        skip_space(&p);
+        size = parse_u32(&p);
+        if (!base || !size) {
+            puts_("rw on @<offset> <size> needs both\n");
+            return;
+        }
+    }
+
+    err = lfsvol_write_enable(base, size);
+    if (err) {
+        report("rw on", err);
+        return;
+    }
+
+    (void)lfsvol_write_region(&rb, &rs);
+    puts_("writing enabled, 0x");
+    print_hex32(rb, 8);
+    puts_(" + 0x");
+    print_hex32(rs, 8);
+    puts_(". this does not survive a reboot.\n");
+}
+
+/* cat <path> -- emit file content a chunk at a time. Reading needs no unlock. */
+static void cat_emit(void *ctx, const char *buf, uint32_t len)
+{
+    uint32_t i;
+
+    (void)ctx;
+    for (i = 0; i < len; i++) {
+        putch_(buf[i]);
+    }
+}
+
+static void cmd_cat(const char *p)
+{
+    char path[PATH_MAX];
+    int err;
+
+    if (!take_path(&p, path, (int)sizeof(path))) {
+        puts_("usage: cat <path>\n");
+        return;
+    }
+
+    err = lfsvol_cat(0, path, cat_emit, 0);
+    if (err < 0) {
+        report("cat", err);
+    }
+}
+
+/* put <path> <line>  replace the file, creating it if absent
+ * add <path> <line>  append a line, creating the file if absent */
+static void cmd_write_line(const char *p, int append)
+{
+    char path[PATH_MAX];
+    int err;
+
+    if (!take_path(&p, path, (int)sizeof(path))) {
+        puts_(append ? "usage: add <path> <line>\n" : "usage: put <path> <line>\n");
+        return;
+    }
+    if (*p == '\0') {
+        puts_(append ? "add needs some text\n" : "put needs some text\n");
+        return;
+    }
+
+    err = append ? lfsvol_add(path, p) : lfsvol_put(path, p);
+    if (err) {
+        report(append ? "add" : "put", err);
+        return;
+    }
+    puts_(append ? "appended to " : "wrote ");
+    puts_(path);
+    putch_('\n');
+}
+
+static void cmd_rm(const char *p)
+{
+    char path[PATH_MAX];
+    int err;
+
+    if (!take_path(&p, path, (int)sizeof(path))) {
+        puts_("usage: rm <path>\n");
+        return;
+    }
+
+    err = lfsvol_rm(path);
+    if (err) {
+        report("rm", err);
+        return;
+    }
+    puts_("removed ");
+    puts_(path);
+    putch_('\n');
+}
+
 static void help(void)
 {
     puts_(
@@ -508,6 +691,11 @@ static void help(void)
         "  ls [path]            list a littlefs directory\n"
         "  ls @<offset>         same, at an explicit flash offset\n"
         "  part                show the partition table\n"
+        "  cat <path>          print a file\n"
+        "  put <path> <line>   replace a file with one line\n"
+        "  add <path> <line>   append one line to a file\n"
+        "  rm <path>           delete a file\n"
+        "  rw [on|off]         unlock writing (put/add/rm need this)\n"
         "  reboot               reset into the download bootloader\n"
         "  help                 this text\n");
 }
@@ -554,6 +742,16 @@ void ramtool_main(void)
             cmd_ls(p);
         } else if (word_is(&p, "part") || word_is(&p, "parts")) {
             cmd_part();
+        } else if (word_is(&p, "cat") || word_is(&p, "type")) {
+            cmd_cat(p);
+        } else if (word_is(&p, "put")) {
+            cmd_write_line(p, 0);
+        } else if (word_is(&p, "add") || word_is(&p, "append")) {
+            cmd_write_line(p, 1);
+        } else if (word_is(&p, "rm") || word_is(&p, "del")) {
+            cmd_rm(p);
+        } else if (word_is(&p, "rw")) {
+            cmd_rw(p);
         } else if (word_is(&p, "reboot") || word_is(&p, "x")) {
             cmd_reboot(p);
         } else {

@@ -120,6 +120,13 @@ PROVIDE ( ets_isr_unmask = 0x40006808 );
  * take a status pointer and a command byte and are not block reads at all. */
 PROVIDE ( esp_rom_spiflash_read = 0x40062ed8 );
 
+/* The ROM's flash writer and eraser, same story as SPIRead: present in both
+ * ROM ELFs, PROVIDEd by none of ESP-IDF's scripts. Addresses from
+ * components/esp_rom/esp32/include/esp32/rom/spi_flash.h, cross-checked against
+ * the ELF symbol table. */
+PROVIDE ( esp_rom_spiflash_write      = 0x40062d50 ); /* SPIWrite      */
+PROVIDE ( esp_rom_spiflash_erase_area = 0x400631ac ); /* SPIEraseArea  */
+
 /* The ROM contains newlib's string routines, so there is no need to link a
  * second copy: littlefs calls memcpy/memset/strlen and friends, and pointing
  * them at the ROM's copies costs zero bytes of payload. Addresses read from the

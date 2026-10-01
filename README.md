@@ -1,9 +1,12 @@
 # RamTool
 
-Run a small utility on a bare ESP32 **out of RAM**. Nothing is written to flash,
-nothing is reflashed between edits, and the flash-resident application is never
-started. You build a payload, push it into RAM, and talk to it over the UART the
-chip is already using.
+Run a small utility on a bare ESP32 **out of RAM**. Nothing is reflashed between
+edits, and the flash-resident application is never started. You build a payload,
+push it into RAM, and talk to it over the UART the chip is already using.
+
+**Loading and running never writes to flash**, and neither does reading files.
+Writing files does, and only after you say `rw on` — see
+[Writing littlefs](#writing-littlefs), which is also where the guard rails are.
 
 Target is a classic ESP32 (Xtensa LX6), revision 0 through 3.
 
@@ -53,15 +56,22 @@ delay <ms>           delay
 ls [path]            list a littlefs directory
 ls @<offset>         same, at an explicit flash offset
 part                 show the partition table
+cat <path>           print a file
+put <path> <line>    replace a file with one line
+add <path> <line>    append one line to a file
+rm <path>            delete a file
+rw [on|off]          unlock writing; put/add/rm need this
 reboot               reset into the download bootloader
 help                 command list
 ```
 
-Without littlefs the payload is around 1.9 KB of code and 0.8 KB of read-only
-data. With littlefs linked in it is about 18 KB of code and 1.7 KB of
-read-only data, and `.bss` still only grows to roughly 0.6 KB. See
-[Reading littlefs](#reading-littlefs) for where those numbers come from and why
-the RAM cost is so much smaller than it looks.
+Paths cannot contain spaces: the console splits on whitespace and there is no
+quoting, so a name with a space in it is not addressable.
+
+The base payload is around 1.9 KB of code and 0.8 KB of read-only data. Adding
+littlefs took it to about 18 KB of code; adding file writing took it to 25 KB
+total. See [Reading littlefs](#reading-littlefs) and
+[Cost](#cost) for where those numbers come from.
 
 Edit `payload.c`, re-run `build.ps1` and `run.py`, and you have a new utility in
 a couple of seconds.
@@ -71,12 +81,16 @@ a couple of seconds.
 Tested against a rev 3.01 part on COM7. The claims that matter, all checked
 rather than assumed:
 
-- **Flash is untouched.** SHA-256 over the partition table and the head of the
-  littlefs volume is byte-identical before and after a session that mounts the
-  filesystem and lists it. Reading SPI flash is the one thing the payload does
-  that the earlier revision never did, so this is worth re-checking; the block
-  device's `prog` and `erase` callbacks return `LFS_ERR_IO` and are unreachable
-  from any read path.
+- **Loading and running write nothing.** SHA-256 over the partition table and the
+  head of the littlefs volume is byte-identical before and after a session that
+  mounts the filesystem, lists it, reads files, and has a write attempt refused.
+  Writing is refused unless it has been unlocked, so this holds for anything
+  short of `rw on`.
+- **Writing works, and stays inside the volume.** With `rw on`, the full cycle
+  was run against a real image: `put` created a file, `cat` read it back, `add`
+  appended and `cat` showed both lines, `ls` reported the expected size at each
+  step, and `rm` removed it. The three pre-existing files were still intact
+  afterwards, with their original sizes and contents.
 - **The payload outlives the host.** After `run.py` exits and the port is closed,
   a fresh raw serial connection still gets a reply to `g 2`. Nothing reset it.
 - **`ls` really reads the filesystem.** It mounts the volume discovered from the
@@ -179,24 +193,108 @@ correspond to anything. A size field that looks like `0x00100000` is really
 
 ### Cost
 
-| | IRAM | DRAM |
-|---|---|---|
-| payload without littlefs | 1,868 B | 764 B |
-| payload with littlefs | 17,988 B | 1,744 B |
-| littlefs itself (`--gc-sections`) | ~14.5 KB | — |
+| | IRAM | DRAM image | `.bss` | stack | total RAM |
+|---|---|---|---|---|---|
+| base payload, no littlefs | 1,868 | 764 | 72 | 2,048 | 4,752 |
+| read-only (`part`, `ls`, `cat`) | 17,988 | 1,744 | 592 | 2,048 | 22,372 |
+| with writing (`put`, `add`, `rm`) | 19,728 | 2,348 | 992 | 2,048 | **25,116** |
 
-littlefs is nearly all code, and `--gc-sections` matters: without it the same
-link is around 26 KB, because the write paths, the file APIs and the allocator
-plumbing are all pulled in. With it, the linker keeps only what `lfs_mount`,
-`lfs_dir_open`, `lfs_dir_read` and `lfs_unmount` actually reach.
+So the whole file-I/O feature — read and write — costs **2,744 bytes** over the
+read-only build, and the payload still uses 30% of the IRAM window and 12% of the
+DRAM one. littlefs is nearly all code, and `--gc-sections` is what makes that
+cheap: without it the same link is around 26 KB before any file code is added,
+because the write paths, the file APIs and the allocator plumbing are all pulled
+in regardless. With it, the linker keeps only what is actually reached.
 
-The RAM cost is small, and not because the buffers are shared or clever.
-`lfs_mount` uses `read_buffer` and `prog_buffer` at **`cache_size` bytes each,
-not `block_size`** — which is not the obvious reading and costs 8 KB of DRAM if
-you get it wrong. With `cache_size` at 128 the two buffers plus the lookahead
-buffer come to 272 bytes. `prog_buffer` has to be supplied even though nothing
-is ever written, because under `LFS_NO_MALLOC` `lfs_mount` asserts on a `NULL`
-one; it just does not have to be large.
+The `.bss` growth is worth understanding rather than just accepting. `lfs_mount`
+uses `read_buffer` and `prog_buffer` at **`cache_size` bytes each, not
+`block_size`** — not the obvious reading, and 8 KB of DRAM if you get it wrong.
+With `cache_size` at 128 those two plus the lookahead buffer come to 272 bytes.
+An open file needs a third, also `cache_size`, plus one transfer buffer of the
+same size. And the console line buffer grew from 64 to 200 because a
+64-character line is a reasonable register poke and a cramped log entry.
+
+`prog_buffer` has to be supplied even though a read-only listing never writes,
+because under `LFS_NO_MALLOC` `lfs_mount` asserts on a `NULL` one; it just does
+not have to be large.
+
+## Writing littlefs
+
+Writing is the one thing here that can destroy what is on the chip, so it is
+gated and clamped, and the gate lives in the block device rather than in the
+command layer. That placement is deliberate: a mistake in `payload.c` should not
+be able to turn into an erase.
+
+`rw on` unlocks writing, and prints the exact region it just unlocked. `rw`
+alone reports the current state, `rw off` re-locks. Because the flag lives in
+`.bss`, it does not survive a reboot — re-locking is the default, and so is the
+state after every `run.py`.
+
+```
+> put test.txt hello
+put: writing is locked; 'rw on' first (1000)
+> rw on
+writing enabled, 0x00670000 + 0x00180000. this does not survive a reboot.
+> put test.txt hello
+wrote test.txt
+```
+
+### The clamp is the half that matters
+
+Unlocking alone would be nearly worthless, because of how `block_count` works.
+`lfs_mount` is deliberately handed `block_count` 0, which tells littlefs to read
+the real value out of the superblock. That is exactly right for mounting: there
+is then no partition size to keep in step with. But it means the filesystem's
+idea of how big it is comes off the disk and is not checked against anything.
+
+A corrupt or hostile superblock claiming `block_count` 100000 at `block_size`
+4096 describes 400 MB, and every one of those blocks would be a legal erase —
+including the running application and NVS. So `bd_prog` and `bd_erase` both
+check the address against the region `rw on` established, and `rw on` takes that
+region from the partition table's own size, rounded down to a whole number of
+blocks. The boundary is on a block edge so the clamp can never disagree with
+littlefs about where the volume ends.
+
+Which is also why `rw on @<offset>` requires an explicit size: with no partition
+size there is nothing to clamp against, and `lfsvol_write_enable` refuses that
+combination rather than guessing.
+
+### `lfs_file_open` does not exist under `LFS_NO_MALLOC`
+
+Not "returns an error" — the symbol is absent. `lfs.c:6053` wraps it in
+`#ifndef LFS_NO_MALLOC`, so with our flags the link fails outright:
+
+```
+undefined reference to `lfs_file_open'
+```
+
+`lfs.h:577` says so in advance: *"if LFS_NO_MALLOC is defined, lfs_file_open()
+will fail with LFS_ERR_NOMEM, thus use lfs_file_opencfg() with config.buffer
+set."* File access therefore goes through `lfs_file_opencfg` with a buffer we
+own, and that buffer wants `cache_size` bytes — the same size as the mount
+caches. The config struct is zeroed first, because `attr_count` of 0 is what
+littlefs checks to decide there are no attributes to look for.
+
+This is the same family of trap as `prog_buffer` in the read-only build: under
+`LFS_NO_MALLOC` every buffer has to be supplied by hand, and the failure mode is
+either a link error or an assertion rather than something descriptive.
+
+### Erase takes an address, not a block
+
+`esp_rom_spiflash_erase_area(start_addr, area_len)` is given a byte range, where
+littlefs thinks in blocks, so `bd_erase` translates. It assumes `block_size`
+equals the flash sector size, which holds for every volume seen here. A volume
+with sub-sector blocks would need the containing sector erased instead, and
+`write_permitted` widened to match. Both are noted in `lfsvol.c` rather than left
+implicit.
+
+### Interrupts being masked is not a problem for writes
+
+This was the open question, because `start.S` masks ISR levels to stop the ROM's
+UART handler stealing console bytes, and the read path had already hung once for
+a reason that looked unrelated. The ROM's `SPIWrite` polls rather than waiting on
+an interrupt, so it works with interrupts masked — verified on hardware, not
+assumed.
 
 littlefs v2.9.3 is vendored unmodified in `littlefs/`, pinned to commit
 `d01280e6` with the licence text alongside; `littlefs/ORIGIN.md` records where

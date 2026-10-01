@@ -44,6 +44,17 @@ extern void esp_rom_software_reset_system(void);
 extern void esp_rom_spiflash_attach(uint32_t ishspi, int legacy);
 extern int esp_rom_spiflash_read(uint32_t src_addr, uint32_t *dest, int32_t len);
 
+/* Writing. Same situation as SPIRead: the ROM has these, nothing PROVIDEs them.
+ *
+ * esp_rom_spiflash_erase_area takes a start address and a length, NOT a block
+ * or sector number, so the caller has to translate from whatever unit littlefs
+ * thinks in. It is assumed the volume's block_size equals the flash sector
+ * size; that holds for every volume seen so far, and a volume with smaller
+ * blocks would need the containing sector erased instead. */
+extern int esp_rom_spiflash_write(uint32_t dest_addr, const uint32_t *src,
+                                  int32_t len);
+extern int esp_rom_spiflash_erase_area(uint32_t start_addr, uint32_t area_len);
+
 /* UART receive under its raw ROM name, for cross-reference. The linker resolves
  * esp_rom_uart_rx_one_char to the same 0x400092d0. */
 #define ROM_UART_RX_ONE_CHAR_NAME uart_rx_one_char
@@ -71,6 +82,8 @@ extern void ets_isr_unmask(uint32_t level); /* 0x40006808 */
 #define ROM_GPIO_PAD_SELECT_GPIO  0x40009fdc
 #define ROM_SPIREAD               0x40062ed8
 #define ROM_SPIFLASH_ATTACH       0x40062a6c
+#define ROM_SPIWRITE              0x40062d50
+#define ROM_SPIERASE_AREA         0x400631ac
 
 /* ---- peripherals, from components/soc/esp32/ld/esp32.peripherals.ld ---- */
 
