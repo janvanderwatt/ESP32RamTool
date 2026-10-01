@@ -13,6 +13,8 @@ D:\temp\projects\RamTool
 ├── run.py        push it into RAM and start it
 ├── start.S       entry point: stack, bss, UART handover
 ├── payload.c     the utility itself (the part you will edit)
+├── lfsvol.c/.h   read-only littlefs over SPI flash (the 'ls' and 'part' commands)
+├── littlefs/     vendored littlefs v2.9.3, unmodified
 ├── rom.h         ROM function and peripheral addresses
 └── ramtool.ld    linker script: where code and data land
 ```
@@ -48,27 +50,167 @@ blink <pin> [n] [ms] blink a pin
 r <addr>             read a 32-bit register
 w <addr> <val>       write a 32-bit register
 delay <ms>           delay
+ls [path]            list a littlefs directory
+ls @<offset>         same, at an explicit flash offset
+part                 show the partition table
 reboot               reset into the download bootloader
 help                 command list
 ```
 
-The current payload is around 1.9 KB of code and 0.8 KB of read-only data. Edit
-`payload.c`, re-run `build.ps1` and `run.py`, and you have a new utility in a
-couple of seconds.
+Without littlefs the payload is around 1.9 KB of code and 0.8 KB of read-only
+data. With littlefs linked in it is about 18 KB of code and 1.7 KB of
+read-only data, and `.bss` still only grows to roughly 0.6 KB. See
+[Reading littlefs](#reading-littlefs) for where those numbers come from and why
+the RAM cost is so much smaller than it looks.
+
+Edit `payload.c`, re-run `build.ps1` and `run.py`, and you have a new utility in
+a couple of seconds.
 
 ## Verified on hardware
 
-Tested against a rev 3.01 part on COM7. The two claims that matter, both checked
+Tested against a rev 3.01 part on COM7. The claims that matter, all checked
 rather than assumed:
 
-- **Flash is untouched.** SHA-256 of 16 KB from `0x1000` is byte-identical before
-  and after a full build-and-launch cycle.
+- **Flash is untouched.** SHA-256 over the partition table and the head of the
+  littlefs volume is byte-identical before and after a session that mounts the
+  filesystem and lists it. Reading SPI flash is the one thing the payload does
+  that the earlier revision never did, so this is worth re-checking; the block
+  device's `prog` and `erase` callbacks return `LFS_ERR_IO` and are unreachable
+  from any read path.
 - **The payload outlives the host.** After `run.py` exits and the port is closed,
   a fresh raw serial connection still gets a reply to `g 2`. Nothing reset it.
+- **`ls` really reads the filesystem.** It mounts the volume discovered from the
+  partition table and lists what is there, matching the file names and sizes
+  that were written into the image:
+
+  ```
+  > part
+  partitions:
+    nvs  @0x00009000  0x00005000  data sub 0x02
+    otadata  @0x0000e000  0x00002000  data sub 0x00
+    app0  @0x00010000  0x00330000  app  sub 0x10
+    app1  @0x00340000  0x00330000  app  sub 0x11
+    spiffs  @0x00670000  0x00180000  data sub 0x82
+    coredump  @0x007f0000  0x00010000  data sub 0x03
+  > ls
+    [f] ECo.csv             69
+    [f] ICo.csv             153
+    [f] WiFi.csv             25
+  ```
+
+  Note that the partition is labelled `spiffs` and typed `0x82`, and the thing in
+  it is littlefs. PlatformIO builds a `littlefs.bin` and writes it into the
+  partition its own tooling expects, so neither the label nor the subtype is
+  reliable evidence of the on-disk format. `ls` does not believe either one: it
+  tries candidates and keeps whichever one actually mounts.
 
 `reboot` also does what it claims: it resets into
 `boot:0x3 (DOWNLOAD_BOOT(UART0))`, and the chip can then be reconnected with
 `connect("no_reset")`, so the next `run.py` needs no keypress.
+
+## Reading littlefs
+
+littlefs is a portable C library. All it needs from the host is a block device,
+a CRC function, and a handful of buffers, so running it from a bare RAM payload
+is not exotic. `lfsvol.c` supplies those three things and a directory walk.
+
+The filesystem is found by reading the partition table at `0x8000`, skipping the
+application slots and the data subtypes that are known not to be filesystems,
+and trying what is left. `block_count` is deliberately passed to `lfs_mount` as
+`0`, which littlefs treats as "read the real value out of the superblock", so
+there is nothing here to keep in step with the partition table. `block_size`
+cannot be defaulted the same way — a mismatch is a hard `LFS_ERR_INVAL` — so a
+short list of likely values is tried in turn.
+
+Four things cost real time here. All four are silent failures.
+
+### `lfs_crc` is not `esp_rom_crc32_le`
+
+This is the one worth internalising. It is very tempting to alias littlefs's
+checksum onto the ROM's CRC helper, because both are reflected CRC-32 with
+polynomial `0xedb88320` and the aliasing costs zero bytes.
+
+They compute different values. littlefs's `lfs_crc` is a 16-entry nibble-table
+CRC that never inverts anything: the seed goes in raw and the result comes out
+raw. `esp_rom_crc32_le` is the same polynomial driven a byte at a time but in
+zlib style, inverting the seed on entry and the result on exit.
+
+The symptom is not a checksum error. Every metadata block fails verification,
+`lfs_dir_fetchmatch` rejects both halves of the superblock pair, and littlefs
+reports only:
+
+```
+Corrupted dir pair at {0x0, 0x1}
+```
+
+which mentions neither checksums nor the real cause. `lfsvol.c` implements
+`lfs_crc` properly instead. It was confirmed against the on-flash CCRC tags of a
+real image: the no-invert form reproduces both superblock copies
+(`0x0bbfbaf6` and `0x4d6d8f92`), the ROM form reproduces neither.
+
+### The function named `esp_rom_spiflash_read_user_cmd` is not a block read
+
+It is a raw single-command reader taking `(status *, cmd)`. Handing it a source
+address and a length does not fault; it hangs, which looks like a dead payload
+rather than a bad argument. The block reader is `esp_rom_spiflash_read`, which
+is the ROM's `SPIRead` at `0x40062ed8`. No ESP-IDF linker script `PROVIDE`s that
+name, so `ramtool.ld` gives it its literal address.
+
+### `lfs_dir_read` returns positive on success
+
+Not `0`. It returns a positive value on success, `0` at end of directory, and a
+negative value on error. Both obvious idioms are wrong: `while ((err =
+lfs_dir_read(...)) == 0)` stops before reading anything, and `if (err) { fail }`
+fires on the very first successful read. Check the sign explicitly.
+
+### On-flash tags are big-endian and XOR-chained
+
+Only relevant if you go reading a raw image without littlefs, but it makes hand
+decoding produce confident nonsense. Each tag is stored big-endian and XORed
+with the previous tag, the chain seeded at `0xffffffff`:
+
+```c
+tag = frombe32(raw) ^ ptag;
+```
+
+Decoding the bytes as little-endian words yields plausible values that do not
+correspond to anything. A size field that looks like `0x00100000` is really
+`block_size` 4096 once the chain is undone.
+
+### Cost
+
+| | IRAM | DRAM |
+|---|---|---|
+| payload without littlefs | 1,868 B | 764 B |
+| payload with littlefs | 17,988 B | 1,744 B |
+| littlefs itself (`--gc-sections`) | ~14.5 KB | — |
+
+littlefs is nearly all code, and `--gc-sections` matters: without it the same
+link is around 26 KB, because the write paths, the file APIs and the allocator
+plumbing are all pulled in. With it, the linker keeps only what `lfs_mount`,
+`lfs_dir_open`, `lfs_dir_read` and `lfs_unmount` actually reach.
+
+The RAM cost is small, and not because the buffers are shared or clever.
+`lfs_mount` uses `read_buffer` and `prog_buffer` at **`cache_size` bytes each,
+not `block_size`** — which is not the obvious reading and costs 8 KB of DRAM if
+you get it wrong. With `cache_size` at 128 the two buffers plus the lookahead
+buffer come to 272 bytes. `prog_buffer` has to be supplied even though nothing
+is ever written, because under `LFS_NO_MALLOC` `lfs_mount` asserts on a `NULL`
+one; it just does not have to be large.
+
+littlefs v2.9.3 is vendored unmodified in `littlefs/`; the build flags it needs
+are in `build.ps1`. Those flags are not optional. `LFS_NO_DEBUG`, `LFS_NO_WARN`
+and `LFS_NO_ERROR` all expand to `printf`, which does not exist here, and without
+all three the link fails on undefined references. `LFS_NO_MALLOC` and
+`LFS_NO_THREADSAFE` remove the allocator and the mutex; there is no heap and one
+task. `LFS_NO_ASSERT` drops `assert()`, which is also absent.
+
+Two debugging notes for next time. `lfs_util.h` only defines `LFS_ERROR` when it
+is not already defined, so `-DLFS_ERROR(...)=my_reporter(__LINE__)` on the
+command line replaces `printf` with a line-number reporter and turns a
+contentless "Corrupted dir pair" into the exact failing check. And when reading
+an image by hand, remember the tag chain above: it is the difference between a
+superblock that reads sensibly and one that does not.
 
 ## Why there is a host script at all
 
@@ -187,6 +329,13 @@ error. The launch happens first, then the reader attaches.
 The payload is a resident command loop, which is the useful shape for this: the
 chip is alive in RAM and you can poke it over the UART. To add a capability, add a
 function in `payload.c` and a `word_is()` arm in the dispatch chain.
+
+For anything filesystem-shaped, add to `lfsvol.c` instead and call it from
+`payload.c`. The block device, the CRC and the buffers are all already there,
+and `lfsvol_list` hands entries to a callback rather than buffering them, which
+matters because a name can be 255 bytes and a directory can hold a lot of them.
+`ls @<offset>` is the fastest way to point the existing machinery at a volume
+while you work on it.
 
 Two constraints to keep in mind when you do:
 

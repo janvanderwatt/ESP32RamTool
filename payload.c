@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 
+#include "lfsvol.h"
 #include "rom.h"
 
 /* The ROM's printf is newlib's, so it supports the usual conversions. Keeping
@@ -411,6 +412,88 @@ static void cmd_reboot(const char *p)
     esp_rom_software_reset_system();
 }
 
+/* ------------------------------------------------------------- littlefs ls */
+
+/* lfsvol reports each entry through a callback rather than filling in an array,
+ * because a directory can hold names up to LFS_NAME_MAX (255) bytes and
+ * buffering a few dozen of those would cost more DRAM than the whole rest of
+ * the payload. */
+static void ls_visit(void *ctx, const char *name, uint32_t size, int is_dir)
+{
+    (void)ctx;
+    puts_(is_dir ? "  [d] " : "  [f] ");
+    puts_(name);
+    /* Pad short names so the sizes line up, rather than trying to compute
+     * column widths in two passes over a directory we cannot rewind cheaply. */
+    if (!is_dir) {
+        int pad = 20;
+        const char *n = name;
+        while (*n++) {
+            pad--;
+        }
+        while (pad-- > 0) {
+            putch_(' ');
+        }
+        print_u32(size);
+    }
+    putch_('\n');
+}
+
+static void part_visit(void *ctx, const char *label, uint32_t offset,
+                       uint32_t size, uint8_t type, uint8_t subtype)
+{
+    (void)ctx;
+    puts_("  ");
+    puts_(label[0] ? label : "(unnamed)");
+    puts_("  @0x");
+    print_hex32(offset, 8);
+    puts_("  0x");
+    print_hex32(size, 8);
+    puts_(type == 0x01 ? "  data sub 0x" : "  app  sub 0x");
+    print_hex32(subtype, 2);
+    putch_('\n');
+}
+
+static void cmd_part(void)
+{
+    puts_("partitions:\n");
+    lfsvol_partitions(part_visit, 0);
+}
+
+static void cmd_ls(const char *p)
+{
+    uint32_t base = 0;
+    int n;
+
+    skip_space(&p);
+
+    /* "@<offset>" overrides discovery and points straight at a flash address.
+     * Discovery works on any sane partition table, so this is only needed for
+     * a layout the table does not describe. */
+    if (*p == '@') {
+        p++;
+        base = parse_u32(&p);
+        skip_space(&p);
+    }
+
+    if (*p == '\0') {
+        p = "/";
+    }
+
+    n = lfsvol_list(base, p, ls_visit, 0);
+    if (n < 0) {
+        puts_("ls: ");
+        puts_(lfsvol_strerror(n));
+        puts_(" (");
+        print_u32((uint32_t)(-n));
+        puts_(")\n");
+        return;
+    }
+    if (n == 0) {
+        puts_("(empty)\n");
+    }
+}
+
 static void help(void)
 {
     puts_(
@@ -422,6 +505,9 @@ static void help(void)
         "  r <addr>             read a 32-bit register\n"
         "  w <addr> <val>       write a 32-bit register\n"
         "  delay <ms>           delay\n"
+        "  ls [path]            list a littlefs directory\n"
+        "  ls @<offset>         same, at an explicit flash offset\n"
+        "  part                show the partition table\n"
         "  reboot               reset into the download bootloader\n"
         "  help                 this text\n");
 }
@@ -464,6 +550,10 @@ void ramtool_main(void)
             cmd_write(p);
         } else if (word_is(&p, "d") || word_is(&p, "delay")) {
             cmd_delay(p);
+        } else if (word_is(&p, "ls") || word_is(&p, "dir")) {
+            cmd_ls(p);
+        } else if (word_is(&p, "part") || word_is(&p, "parts")) {
+            cmd_part();
         } else if (word_is(&p, "reboot") || word_is(&p, "x")) {
             cmd_reboot(p);
         } else {

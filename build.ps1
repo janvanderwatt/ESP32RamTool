@@ -59,6 +59,10 @@ $common = @(
     '-Wextra'
     '-Werror'
     "-I$root"
+    # Our own code includes littlefs's headers (lfsvol.c uses lfs_t and the
+    # error codes), so this path is needed by more than littlefs's own
+    # compilation.
+    "-I$root\littlefs"
 )
 
 if ($Configuration -eq 'Debug') {
@@ -79,17 +83,59 @@ $asmCommon = @(
 
 $srcs = @(
     @{ file = 'start.S';   args = $asmCommon },
-    @{ file = 'payload.c'; args = $common }
+    @{ file = 'payload.c'; args = $common },
+    @{ file = 'lfsvol.c';  args = $common }
 )
+
+# littlefs is third-party and does not compile clean under our warning set, so
+# it gets its own flags rather than weakening the flags for our own code.
+#
+# The LFS_NO_* set matters a great deal here:
+#   NO_MALLOC      use the buffers we supply instead of an allocator; there is
+#                  no heap in this payload
+#   NO_THREADSAFE  drop the mutex wrappers; there is only one task
+#   NO_DEBUG/NO_WARN/NO_ERROR  these all expand to printf, and there is no
+#                  printf. Without them the link fails on undefined references.
+#   NO_ASSERT      drops assert(); assert is not available either
+#
+# -I littlefs is what lets lfs.c find its own lfs.h and lfs_util.h.
+$lfsArgs = @(
+    '-c'
+    '-mlongcalls'
+    '-mabi=windowed'
+    '-ffreestanding'
+    '-fno-builtin'
+    '-fno-stack-protector'
+    '-fno-pic'
+    '-fno-asynchronous-unwind-tables'
+    '-fno-unwind-tables'
+    '-fomit-frame-pointer'
+    '-std=gnu11'
+    '-Os'
+    '-DLFS_NO_DEBUG'
+    '-DLFS_NO_WARN'
+    '-DLFS_NO_ERROR'
+    '-DLFS_NO_ASSERT'
+    '-DLFS_NO_MALLOC'
+    '-DLFS_NO_THREADSAFE'
+    "-I$root\littlefs"
+)
+$srcs += @{ file = 'littlefs\lfs.c'; args = $lfsArgs }
 
 foreach ($s in $srcs) {
     $in = Join-Path $root $s.file
-    $out = Join-Path $build ($s.file -replace '\.', '_')
+    # Flatten the path into the object name: littlefs\lfs.c must not become an
+    # object inside a directory that does not exist.
+    $stem = ($s.file -replace '\\', '_') -replace '\.', '_'
+    $out = Join-Path $build $stem
     & $cc @($s.args) '-o' $out $in
     if ($LASTEXITCODE -ne 0) { throw "compile failed: $($s.file)" }
 }
 
-$objects = $srcs | ForEach-Object { Join-Path $build ($_.file -replace '\.', '_') }
+$objects = $srcs | ForEach-Object {
+    $stem = ($_.file -replace '\\', '_') -replace '\.', '_'
+    Join-Path $build $stem
+}
 
 $elf = Join-Path $build 'ramtool.elf'
 $map = Join-Path $build 'ramtool.map'

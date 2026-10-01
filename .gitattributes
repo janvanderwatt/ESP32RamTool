@@ -1,0 +1,15 @@
+# Normalise line endings in the repository, check them out as CRLF.
+#
+# Without this, git's default is to store LF and check out native, which on
+# Windows means CRLF and everywhere else LF. start.S is the file that suffers:
+# the Xtensa assembler's error messages quote the source line, and a line whose
+# trailing CR is carried through the preprocessor shows up as a stray character
+# in a way that is very hard to see. Pinning it keeps the working tree stable.
+
+* text=auto eol=crlf
+
+# Assembly goes through the C preprocessor, so pin it explicitly.
+*.S text eol=crlf
+
+# Binary build output must never be touched.
+*.bin binary

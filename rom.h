@@ -32,6 +32,18 @@ extern void esp_rom_gpio_pad_select_gpio(uint8_t gpio_num);
 extern void esp_rom_gpio_pad_set_drv(uint8_t gpio_num, uint8_t drv);
 extern void esp_rom_software_reset_system(void);
 
+/* SPI flash access, used to read a littlefs volume off the chip.
+ *
+ * esp_rom_spiflash_attach is resolved from esp32.rom.api.ld. esp_rom_spiflash_read
+ * is the ROM's SPIRead and is NOT exported by any ESP-IDF linker script, so
+ * ramtool.ld gives it its literal address.
+ *
+ * Mind the near-identical esp_rom_spiflash_read_user_cmd: that is a raw
+ * single-command reader taking (status *, cmd), not a block read. Handing it
+ * block arguments does not fault, it hangs. */
+extern void esp_rom_spiflash_attach(uint32_t ishspi, int legacy);
+extern int esp_rom_spiflash_read(uint32_t src_addr, uint32_t *dest, int32_t len);
+
 /* UART receive under its raw ROM name, for cross-reference. The linker resolves
  * esp_rom_uart_rx_one_char to the same 0x400092d0. */
 #define ROM_UART_RX_ONE_CHAR_NAME uart_rx_one_char
@@ -57,6 +69,8 @@ extern void ets_isr_unmask(uint32_t level); /* 0x40006808 */
 #define ROM_GPIO_INPUT_GET        0x40009b88
 #define ROM_GPIO_MATRIX_OUT       0x40009f0c
 #define ROM_GPIO_PAD_SELECT_GPIO  0x40009fdc
+#define ROM_SPIREAD               0x40062ed8
+#define ROM_SPIFLASH_ATTACH       0x40062a6c
 
 /* ---- peripherals, from components/soc/esp32/ld/esp32.peripherals.ld ---- */
 
