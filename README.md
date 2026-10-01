@@ -198,12 +198,15 @@ buffer come to 272 bytes. `prog_buffer` has to be supplied even though nothing
 is ever written, because under `LFS_NO_MALLOC` `lfs_mount` asserts on a `NULL`
 one; it just does not have to be large.
 
-littlefs v2.9.3 is vendored unmodified in `littlefs/`; the build flags it needs
-are in `build.ps1`. Those flags are not optional. `LFS_NO_DEBUG`, `LFS_NO_WARN`
-and `LFS_NO_ERROR` all expand to `printf`, which does not exist here, and without
-all three the link fails on undefined references. `LFS_NO_MALLOC` and
-`LFS_NO_THREADSAFE` remove the allocator and the mutex; there is no heap and one
-task. `LFS_NO_ASSERT` drops `assert()`, which is also absent.
+littlefs v2.9.3 is vendored unmodified in `littlefs/`, pinned to commit
+`d01280e6` with the licence text alongside; `littlefs/ORIGIN.md` records where
+it came from and how to re-verify that it is still pristine. The build flags it
+needs are in `build.ps1`. Those flags are not optional. `LFS_NO_DEBUG`,
+`LFS_NO_WARN` and `LFS_NO_ERROR` all expand to `printf`, which does not exist
+here, and without all three the link fails on undefined references.
+`LFS_NO_MALLOC` and `LFS_NO_THREADSAFE` remove the allocator and the mutex;
+there is no heap and one task. `LFS_NO_ASSERT` drops `assert()`, which is also
+absent.
 
 Two debugging notes for next time. `lfs_util.h` only defines `LFS_ERROR` when it
 is not already defined, so `-DLFS_ERROR(...)=my_reporter(__LINE__)` on the
