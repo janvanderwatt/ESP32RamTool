@@ -46,3 +46,23 @@ services:
     stdin_open: true
     tty: true
     command: ["python3", "run.py", "--port", "${PORT:-/dev/ttyUSB0}"]
+
+  # Windows has no way to pass a COM port in, so reach the chip over TCP instead.
+  # Start the bridge on the host first:
+  #     python tools/serial_bridge.py --port COM7 --listen 5000
+  # then:
+  #     docker compose --profile winflash run --rm winflash
+  winflash:
+    profiles: ["winflash"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ramtool
+    extra_hosts:
+      # Needed for a plain Docker Engine; Docker Desktop provides it already.
+      - "host.docker.internal:host-gateway"
+    environment:
+      RAMTOOL_PORT: "${PORT:-socket://host.docker.internal:5000}"
+    stdin_open: true
+    tty: true
+    command: ["python3", "run.py", "--port", "${PORT:-socket://host.docker.internal:5000}"]

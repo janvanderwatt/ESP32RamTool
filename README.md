@@ -191,6 +191,14 @@ arguments.
 **[littlefs's idea of its own size comes off the disk, unchecked](docs/safe-flash-writes.md).**
 Which is why flash writes need a clamp and not merely a lock.
 
+**[The console has no flow control and the FIFO is 128 bytes](docs/serial-from-container.md).**
+Type faster than the payload can drain it and characters are lost silently, which
+looks like a flaky link rather than an overrun.
+
+**[`--device` cannot pass a COM port into a Linux container](docs/serial-from-container.md).**
+Three spellings, three different errors. Bridge it over TCP instead, and mind what
+the reset lines cost you.
+
 ## Repository layout
 
 ```
@@ -204,6 +212,7 @@ lfsvol.c/.h     littlefs over SPI flash: the file and partition commands
 littlefs/       vendored littlefs, unmodified (see ORIGIN.md)
 rom.h           ROM function and peripheral addresses
 ramtool.ld      linker script: where code and data land
+tools/serial_bridge.py  reach a host serial port from a container
 docs/           the notes linked above
 LICENSE         BSD-3-Clause
 ```
@@ -248,8 +257,28 @@ docker compose --profile flash run --rm flash   # drive real hardware
 
 Driving hardware from the container needs the serial device passed through, which
 is reliable on a Linux Docker host and unreliable under Docker Desktop on Windows
-and macOS. There, build in the container and run `run.py` on the host — the
+and macOS. There, build in the container and run `run.py` on the host - the
 artifacts land in `./build` either way, so nothing is lost.
+
+**On Windows, `--device` cannot reach a COM port at all.** Bridge it over TCP
+instead. `tools/serial_bridge.py` does this and needs no changes to `run.py`,
+because esptool passes its port string to pyserial and pyserial understands
+`socket://` URLs:
+
+```sh
+# host
+python tools/serial_bridge.py --port COM7 --listen 5000
+
+# container
+docker run --rm --add-host host.docker.internal:host-gateway -it \
+    ramtool python3 run.py --port socket://host.docker.internal:5000
+```
+
+Verified end to end, including the file write cycle. Two costs are worth reading
+before relying on it: DTR/RTS cannot cross a socket, so the bridge owns the chip
+reset; and the reset truth table is board-specific, so there is a `--reset tight`
+option. Both, plus the WSL `usbipd-win` alternative, are in
+[serial-from-container.md](docs/serial-from-container.md).
 
 The container builds and verifies the artifacts; it does **not** pretend to test
 against hardware. Runtime behaviour is the part only a real chip can confirm, and
