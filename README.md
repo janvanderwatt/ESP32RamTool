@@ -1,6 +1,6 @@
 # RamTool
 
-Run a small utility on a bare ESP32 **out of RAM**. No reflashing between edits,
+Run a small utility on a bare ESP32 **in RAM only**. No reflashing between edits,
 and the flash-resident application is never started. You build a payload, push it
 into RAM, and talk to it over the UART the chip is already using.
 
