@@ -65,6 +65,27 @@ ROM_BLOCK = 0x1800
 SHT_SYMTAB = 2
 
 
+def read_manifest(path: str) -> dict[str, int]:
+    """Read the build's manifest.txt: `name=0xVALUE` lines, `#` comments allowed.
+
+    Written by build.ps1 from the ELF, so this is a convenience for running a
+    release asset, not a second source of truth.
+    """
+    values: dict[str, int] = {}
+    with open(path, "r", encoding="ascii") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            name, sep, value = line.partition("=")
+            if not sep:
+                raise ValueError(f"{path}: malformed line {line!r}")
+            values[name.strip()] = int(value.strip(), 0)
+    if not values:
+        raise ValueError(f"{path}: no entries")
+    return values
+
+
 def elf_symbols(path: str) -> dict[str, int]:
     """Return {name: value} for a 32-bit little-endian ELF."""
     with open(path, "rb") as fh:
@@ -292,20 +313,32 @@ def main() -> int:
             esp._port.close()
         return 0
 
-    for path in (elf, iram_bin, dram_bin):
+    # The addresses come from build/manifest.txt when it is present, which is
+    # what lets a release asset be run without a toolchain or the ELF. It is
+    # still derived from the ELF at build time, so ramtool.ld stays the single
+    # source of truth. The ELF is the fallback for a hand-rolled build that
+    # skipped the manifest.
+    for path in (iram_bin, dram_bin):
         if not os.path.exists(path):
             print(f"missing {path}\nrun build.ps1 first", file=sys.stderr)
             return 1
 
-    # The ELF is the authority for both load addresses and the entry point, so
-    # the host and ramtool.ld cannot drift apart silently.
-    syms = elf_symbols(elf)
+    manifest = os.path.join(BUILD, "manifest.txt")
     try:
-        entry = syms["ramtool_entry"]
-        iram_addr = syms["_ramtool_iram_origin"]
-        dram_addr = syms["_ramtool_dram_origin"]
-    except KeyError as exc:
-        print(f"{elf}: missing symbol {exc}", file=sys.stderr)
+        if os.path.exists(manifest):
+            addrs = read_manifest(manifest)
+            entry = addrs["ramtool_entry"]
+            iram_addr = addrs["_ramtool_iram_origin"]
+            dram_addr = addrs["_ramtool_dram_origin"]
+        else:
+            # The ELF is the authority for both load addresses and the entry
+            # point, so the host and ramtool.ld cannot drift apart silently.
+            syms = elf_symbols(elf)
+            entry = syms["ramtool_entry"]
+            iram_addr = syms["_ramtool_iram_origin"]
+            dram_addr = syms["_ramtool_dram_origin"]
+    except (KeyError, ValueError, OSError) as exc:
+        print(f"cannot determine the load addresses: {exc}", file=sys.stderr)
         return 1
 
     with open(iram_bin, "rb") as fh:

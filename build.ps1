@@ -134,7 +134,8 @@ The container image in this repository already has all of it:
 
 $objcopy = Join-Path $toolDir ('xtensa-esp32-elf-objcopy' + $toolExt)
 $size = Join-Path $toolDir ('xtensa-esp32-elf-size' + $toolExt)
-foreach ($tool in @($objcopy, $size)) {
+$nm = Join-Path $toolDir ('xtensa-esp32-elf-nm' + $toolExt)
+foreach ($tool in @($objcopy, $size, $nm)) {
     if (-not (Test-Path $tool)) {
         $resolved = Resolve-Executable (Split-Path $tool -Leaf)
         if ($resolved) {
@@ -307,6 +308,22 @@ if ($LASTEXITCODE -ne 0) { throw 'objcopy (.iram_img) failed' }
 if ($LASTEXITCODE -ne 0) { throw 'objcopy (.dram_img) failed' }
 
 & $size $elf
+
+# A tiny manifest of the three addresses run.py needs, so that *running* the
+# payload needs neither a toolchain nor the ELF -- just the two .bin files and
+# this. The values are still read out of the ELF, so ramtool.ld remains the single
+# source of truth and the host cannot drift away from it silently.
+$symbols = @('ramtool_entry', '_ramtool_iram_origin', '_ramtool_dram_origin')
+$manifestLines = foreach ($sym in $symbols) {
+    $value = & $nm $elf |
+        Select-String -Pattern "^\s*[0-9a-fA-F]+\s+[tT]\s+$([regex]::Escape($sym))\s*$" |
+        ForEach-Object { ($_.Line -split '\s+')[0] } |
+        Select-Object -First 1
+    if (-not $value) { throw "symbol not found in the ELF: $sym" }
+    "$sym=0x$value"
+}
+$manifest = Join-Path $build 'manifest.txt'
+$manifestLines | Set-Content -Path $manifest -Encoding ascii
 
 $iram = (Get-Item $iramBin).Length
 $dram = (Get-Item $dramBin).Length

@@ -53,8 +53,12 @@ COPY . /src
 RUN pwsh -NoProfile -File ./build.ps1
 
 # Fail loudly if the artifacts are not where the host script expects them.
+# manifest.txt matters as much as the binaries: without it run.py has no way to
+# know the load addresses unless it can also parse the ELF.
 RUN test -f build/iram.bin && test -f build/dram.bin && test -f build/ramtool.elf \
- && ls -l build/iram.bin build/dram.bin
+ && test -f build/manifest.txt \
+ && cat build/manifest.txt \
+ && ls -l build/iram.bin build/dram.bin build/manifest.txt
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +77,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY --from=build /src/build/iram.bin   build/iram.bin
 COPY --from=build /src/build/dram.bin   build/dram.bin
+COPY --from=build /src/build/manifest.txt build/manifest.txt
 COPY --from=build /src/build/ramtool.elf build/ramtool.elf
 COPY run.py run.py
 
