@@ -1,0 +1,48 @@
+# Compose wrapper for the RamTool container.
+#
+# The image is built by the Dockerfile; this exists to make the two things people
+# actually want easy:
+#
+#   docker compose build          build the payload in the container
+#   docker compose run --rm tools list the artifacts it produced
+#
+# Driving real hardware needs the serial device passed through, which is what the
+# `flash` service does. Serial passthrough is reliable on a Linux Docker host and
+# unreliable under Docker Desktop on Windows and macOS, so `flash` is a profile
+# rather than a default:
+#
+#   docker compose --profile flash run --rm flash
+#
+# If you are on Windows or macOS, build in the container and run run.py on the
+# host instead. Nothing is lost: the artifacts land in ./build either way.
+
+services:
+  tools:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ramtool
+    volumes:
+      # Put the build products back on the host so they can be flashed from it.
+      - ./build:/src/build
+    command: ["ls", "-l", "/src/build"]
+
+  flash:
+    profiles: ["flash"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ramtool
+    # Override with: docker compose --profile flash run --rm -e PORT=/dev/ttyACM0 flash
+    environment:
+      RAMTOOL_PORT: "${PORT:-/dev/ttyUSB0}"
+    devices:
+      # The host's serial device, by path. Override with -e and editing this if
+      # yours is not /dev/ttyUSB0.
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    volumes:
+      - ./build:/src/build
+    # Interactive: the payload keeps running until Ctrl-C.
+    stdin_open: true
+    tty: true
+    command: ["python3", "run.py", "--port", "${PORT:-/dev/ttyUSB0}"]

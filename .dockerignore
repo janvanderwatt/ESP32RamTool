@@ -1,0 +1,20 @@
+# Keep the build context small and the image reproducible. Anything here is
+# excluded from the context that gets sent to the daemon.
+
+# Build products are produced *inside* the image; copying the host's in would
+# mean a stale binary could masquerade as a fresh one.
+build/
+
+.git/
+.gitattributes
+.gitignore
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Documentation is carried into the image on purpose, so the notes are readable
+# from the image itself.

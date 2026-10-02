@@ -1,14 +1,14 @@
 /* ROM entry points and peripheral addresses for the classic ESP32.
  *
  * Every address here was read out of the ROM ELFs that ship with ESP-IDF
- * (C:\Espressif\tools\esp-rom-elfs\20241011\esp32_rev0_rom.elf and
- * esp32_rev300_rom.elf) and cross-checked against
+ * (esp32_rev0_rom.elf and esp32_rev300_rom.elf, under
+ * $IDF_TOOLS_PATH/esp-rom-elfs/) and cross-checked against
  * components/esp_rom/esp32/ld/esp32.rom.ld. Both revisions agree on all of
  * them, so one table serves the whole family.
  *
  * The functions declared with the esp_rom_ prefix are resolved by the linker
  * from esp32.rom.api.ld. The few ROM symbols with no PROVIDE anywhere are
- * declared here with their literal addresses instead.
+ * declared here with their literal addresses instead; see docs/rom-symbols.md.
  */
 
 #ifndef RAMTOOL_ROM_H

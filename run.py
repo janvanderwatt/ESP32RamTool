@@ -147,14 +147,55 @@ def read_console(port, stop: threading.Event) -> None:
 # locating esptool
 # --------------------------------------------------------------------------
 
-# esptool lives in the ESP-IDF python venv, not in whatever `python` happens to
-# be first on PATH. Rather than make that the caller's problem, try the normal
-# import first and then fall back to the standard ESP-IDF install locations.
-ESPTOOL_GLOBS = (
-    r"C:\Espressif\tools\python\*\venv\Lib\site-packages",
-    r"C:\Espressif\python_env\*\Lib\site-packages",
-    os.path.expandvars(r"%IDF_PATH%\..\..\..\tools\..\python\Lib\site-packages"),
-)
+# esptool is a normal pip package, so the only thing worth doing beyond a plain
+# import is falling back to an ESP-IDF checkout's own environment when one is
+# pointed at by $IDF_PATH. Nothing here is tied to a particular install layout.
+def esptool_globs():
+    """Site-packages directories that might contain esptool."""
+    tools = esptool_home()
+    patterns = []
+
+    # A flat layout, e.g. <tools>/python/vX/venv/lib/site-packages.
+    for lib in ("lib", "Lib"):
+        patterns.append(os.path.join(tools, "*", lib, "site-packages"))
+        patterns.append(os.path.join(tools, "python", "*", "venv", lib,
+                                     "site-packages"))
+        patterns.append(os.path.join(tools, "python", "*", lib,
+                                     "site-packages"))
+
+    # The sibling python_env an ESP-IDF checkout keeps next to its tools
+    # directory, and the tools directory itself when both are given.
+    idf = os.environ.get("IDF_PATH")
+    roots = [tools]
+    if idf:
+        base = os.path.dirname(idf.rstrip("/\\"))
+        roots.append(base)
+        roots.append(os.path.join(base, "tools"))
+    for root in roots:
+        for lib in ("lib", "Lib"):
+            patterns.append(os.path.join(root, "python_env", "*", lib,
+                                         "site-packages"))
+            patterns.append(os.path.join(root, ".espressif", "python_env", "*",
+                                         lib, "site-packages"))
+
+    # Keep order stable and drop duplicates.
+    seen = set()
+    unique = []
+    for p in patterns:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return unique
+
+
+def esptool_home():
+    """Where ESP-IDF keeps its managed tools, if the environment says so."""
+    # IDF_TOOLS_PATH is the documented location; fall back to the conventional
+    # one rather than guessing at a drive letter.
+    return os.environ.get(
+        "IDF_TOOLS_PATH",
+        os.path.join(os.path.expanduser("~"), ".espressif", "tools"),
+    )
 
 
 def import_esp32rom():
@@ -166,7 +207,7 @@ def import_esp32rom():
         pass
 
     tried = []
-    for pattern in ESPTOOL_GLOBS:
+    for pattern in esptool_globs():
         for path in sorted(glob.glob(pattern), reverse=True):
             tried.append(path)
             if not os.path.isdir(os.path.join(path, "esptool")):
@@ -184,19 +225,51 @@ def import_esp32rom():
         "could not import esptool.\n"
         "tried the current interpreter, then:\n"
         + "".join(f"  {p}\n" for p in tried)
-        + "\nRun it with the ESP-IDF python instead, for example:\n"
-        "  & 'C:\\Espressif\\tools\\python\\v5.5.4\\venv\\Scripts\\python.exe' .\\run.py"
+        + "\nSimplest fix:\n"
+        "  pip install esptool\n"
+        "or point IDF_PATH at an ESP-IDF checkout and use its python."
     )
+
+
+def default_port():
+    """Best guess at the serial port, so -p is usually unnecessary.
+
+    Order: $RAMTOOL_PORT, then esptool's own port enumeration if exactly one
+    device looks like a serial port. Returns None rather than guessing wrongly.
+    """
+    env = os.environ.get("RAMTOOL_PORT")
+    if env:
+        return env
+    try:
+        from serial.tools import list_ports
+
+        ports = [p.device for p in list_ports.comports()]
+        if len(ports) == 1:
+            return ports[0]
+        if ports:
+            print(f"several serial ports found: {', '.join(ports)}", file=sys.stderr)
+            print("pick one with --port", file=sys.stderr)
+    except Exception:  # noqa: BLE001 - pyserial is optional at this point
+        pass
+    return None
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("-p", "--port", default="COM7", help="serial port (default COM7)")
+    ap.add_argument("-p", "--port", default=None,
+                    help="serial port; defaults to $RAMTOOL_PORT, or the only "
+                         "serial port found")
     ap.add_argument("--seconds", type=float, default=0.0, metavar="N",
                     help="stay attached and print payload output for N seconds")
     ap.add_argument("--boot", action="store_true",
                     help="reset into the download bootloader and stop there")
     args = ap.parse_args()
+
+    if args.port is None:
+        args.port = default_port()
+    if not args.port:
+        ap.error("no serial port given and none could be detected; "
+                 "pass --port (Windows: COM3, Linux: /dev/ttyUSB0)")
 
     elf = os.path.join(BUILD, "ramtool.elf")
     iram_bin = os.path.join(BUILD, "iram.bin")

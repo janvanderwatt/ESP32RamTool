@@ -3,19 +3,36 @@
     Build the RamTool RAM payload.
 
 .DESCRIPTION
-    Cross-compiles a freestanding Xtensa binary with the ESP-IDF toolchain that
-    is already installed on this machine. There is no idf.py involvement and no
+    Cross-compiles a freestanding Xtensa binary with an ESP-IDF toolchain.
+    There is no idf.py involvement and no
     CMake project; this is a direct gcc invocation with a hand-written linker
     script, because the payload has to land at absolute addresses the host
     script can hand straight to the ROM bootloader.
 
     Produces build\iram.bin and build\dram.bin plus the ELF that holds the
     entry-point symbol.
+
+    Nothing here is tied to a particular machine. The toolchain and ESP-IDF's
+    ROM linker scripts are located in this order:
+
+      1. -ToolchainPath and -RomLdPath, if given
+      2. $env:IDF_PATH for the ROM scripts, $env:IDF_TOOLS_PATH for the toolchain
+      3. xtensa-esp32-elf-gcc on PATH
+
+.EXAMPLE
+    .\build.ps1
+    Uses $env:IDF_PATH, or falls back to whatever is on PATH.
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+
+    # Directory holding xtensa-esp32-elf-gcc
+    [string]$ToolchainPath,
+
+    # Directory holding esp32.rom.ld and friends
+    [string]$RomLdPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,17 +41,132 @@ Set-StrictMode -Version Latest
 $root = $PSScriptRoot
 $build = Join-Path $root 'build'
 
-# Toolchain: the esp-14.2.0 install that ships with ESP-IDF 5.5.4.
-$toolchain = 'C:\Espressif\tools\xtensa-esp-elf\esp-14.2.0_20260121\xtensa-esp-elf\bin'
-$cc = Join-Path $toolchain 'xtensa-esp32-elf-gcc.exe'
-$objcopy = Join-Path $toolchain 'xtensa-esp32-elf-objcopy.exe'
-$size = Join-Path $toolchain 'xtensa-esp32-elf-size.exe'
+# Windows PowerShell 5.1 does not define $IsLinux (it arrived in 6.0), and
+# Set-StrictMode turns referencing it into a hard error rather than an empty
+# string. Derive it from things that exist in both.
+$OnWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or ($env:OS -eq 'Windows_NT')
 
-# The ROM symbol tables the linker pulls addresses from.
-$romLd = 'C:\esp\v5.5.4\esp-idf\components\esp_rom\esp32\ld'
+function Resolve-Executable {
+    param([string]$Name)
 
-if (-not (Test-Path $cc)) { throw "compiler not found: $cc" }
-if (-not (Test-Path "$romLd\esp32.rom.ld")) { throw "ESP-IDF ROM ld scripts not found under $romLd" }
+    $onPath = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($onPath) {
+        return $onPath.Source
+    }
+    # Windows resolves PATHEXT behind the scenes; try the usual suffixes too.
+    if ($OnWindows) {
+        foreach ($ext in @('.exe', '.bat', '.cmd')) {
+            $onPath = Get-Command ($Name + $ext) -ErrorAction SilentlyContinue
+            if ($onPath) {
+                return $onPath.Source
+            }
+        }
+    }
+    return $null
+}
+
+# ---- locate the toolchain ------------------------------------------------
+
+# Work from the compiler's real path rather than a guessed one. On Windows the
+# binary is xtensa-esp32-elf-gcc.exe and on Linux it has no suffix, so the
+# extension is taken from whatever was actually found and reused for the
+# companion tools rather than assumed.
+$cc = $null
+$toolDir = $null
+$toolExt = ''
+
+function Find-GccIn {
+    param([string]$Dir, [int]$Depth)
+
+    $hit = Get-ChildItem -Path $Dir -Filter 'xtensa-esp32-elf-gcc*' -File `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $hit -and $Depth -gt 0) {
+        $hit = Get-ChildItem -Path $Dir -Filter 'xtensa-esp32-elf-gcc*' -File `
+            -Recurse -Depth $Depth -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    return $hit
+}
+
+# 1. An explicit -ToolchainPath, or the directory it names.
+if ($ToolchainPath) {
+    $hit = Find-GccIn -Dir $ToolchainPath -Depth 2
+    if ($hit) {
+        $cc = $hit.FullName
+        $toolDir = $hit.DirectoryName
+        $toolExt = $hit.Extension
+    }
+}
+
+# 2. An ESP-IDF install exports IDF_TOOLS_PATH. The compiler sits several levels
+#    below it inside a versioned folder, and some installs nest a further
+#    'tools' directory, so the depth here is deliberately generous.
+if (-not $cc -and $env:IDF_TOOLS_PATH) {
+    $hit = Find-GccIn -Dir $env:IDF_TOOLS_PATH -Depth 6
+    if ($hit) {
+        $cc = $hit.FullName
+        $toolDir = $hit.DirectoryName
+        $toolExt = $hit.Extension
+    }
+}
+
+# 3. Whatever is on PATH.
+if (-not $cc) {
+    $onPath = Resolve-Executable 'xtensa-esp32-elf-gcc'
+    if ($onPath) {
+        $cc = $onPath
+        $toolDir = Split-Path $onPath -Parent
+        $toolExt = [System.IO.Path]::GetExtension($onPath)
+    }
+}
+
+if (-not $cc) {
+    throw @'
+Cannot find the Xtensa toolchain.
+
+Install ESP-IDF and set IDF_PATH (and IDF_TOOLS_PATH), or put
+xtensa-esp32-elf-gcc on PATH, or pass -ToolchainPath explicitly.
+
+The container image in this repository already has all of it:
+    docker build -t ramtool .
+'@
+}
+
+$objcopy = Join-Path $toolDir ('xtensa-esp32-elf-objcopy' + $toolExt)
+$size = Join-Path $toolDir ('xtensa-esp32-elf-size' + $toolExt)
+foreach ($tool in @($objcopy, $size)) {
+    if (-not (Test-Path $tool)) {
+        $resolved = Resolve-Executable (Split-Path $tool -Leaf)
+        if ($resolved) {
+            $tool = $resolved
+        } else {
+            throw "companion tool missing next to the compiler: $(Split-Path $tool -Leaf)"
+        }
+    }
+}
+
+# ---- locate ESP-IDF's ROM linker scripts --------------------------------
+
+if (-not $RomLdPath -and $env:IDF_PATH) {
+    # Forward slashes work on Windows too, which saves a branch on the separator.
+    $candidate = Join-Path $env:IDF_PATH 'components/esp_rom/esp32/ld'
+    if (Test-Path $candidate) {
+        $RomLdPath = $candidate
+    }
+}
+
+if (-not $RomLdPath) {
+    throw @'
+Cannot find ESP-IDF's ROM linker scripts (esp32.rom.ld).
+
+Set IDF_PATH to an ESP-IDF checkout, or pass -RomLdPath pointing at
+components/esp_rom/esp32/ld.
+'@
+}
+
+if (-not (Test-Path (Join-Path $RomLdPath 'esp32.rom.ld'))) {
+    throw "esp32.rom.ld not found under '$RomLdPath'"
+}
 
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 
@@ -62,7 +194,7 @@ $common = @(
     # Our own code includes littlefs's headers (lfsvol.c uses lfs_t and the
     # error codes), so this path is needed by more than littlefs's own
     # compilation.
-    "-I$root\littlefs"
+    "-I" + (Join-Path $root 'littlefs')
 )
 
 if ($Configuration -eq 'Debug') {
@@ -118,22 +250,24 @@ $lfsArgs = @(
     '-DLFS_NO_ASSERT'
     '-DLFS_NO_MALLOC'
     '-DLFS_NO_THREADSAFE'
-    "-I$root\littlefs"
+    "-I" + (Join-Path $root 'littlefs')
 )
-$srcs += @{ file = 'littlefs\lfs.c'; args = $lfsArgs }
+# Source paths use forward slashes: they resolve on Linux, and Join-Path leaves
+# them alone on Windows.
+$srcs += @{ file = 'littlefs/lfs.c'; args = $lfsArgs }
 
 foreach ($s in $srcs) {
     $in = Join-Path $root $s.file
-    # Flatten the path into the object name: littlefs\lfs.c must not become an
+    # Flatten the path into the object name: littlefs/lfs.c must not become an
     # object inside a directory that does not exist.
-    $stem = ($s.file -replace '\\', '_') -replace '\.', '_'
+    $stem = ($s.file -replace '[\\/]', '_') -replace '\.', '_'
     $out = Join-Path $build $stem
     & $cc @($s.args) '-o' $out $in
     if ($LASTEXITCODE -ne 0) { throw "compile failed: $($s.file)" }
 }
 
 $objects = $srcs | ForEach-Object {
-    $stem = ($_.file -replace '\\', '_') -replace '\.', '_'
+    $stem = ($_.file -replace '[\\/]', '_') -replace '\.', '_'
     Join-Path $build $stem
 }
 
@@ -147,9 +281,9 @@ $linkArgs = @(
     '-nostdlib'
     '-nostartfiles'
     ('-Wl,-T,' + $ourLd)
-    ('-Wl,-T,' + $romLd + '\esp32.rom.api.ld')
-    ('-Wl,-T,' + $romLd + '\esp32.rom.ld')
-    ('-Wl,-T,' + $romLd + '\esp32.rom.libgcc.ld')
+    ('-Wl,-T,' + (Join-Path $RomLdPath 'esp32.rom.api.ld'))
+    ('-Wl,-T,' + (Join-Path $RomLdPath 'esp32.rom.ld'))
+    ('-Wl,-T,' + (Join-Path $RomLdPath 'esp32.rom.libgcc.ld'))
     '-Wl,--gc-sections'
     ('-Wl,-Map=' + $map)
     '-Wl,--no-warn-rwx-segments'

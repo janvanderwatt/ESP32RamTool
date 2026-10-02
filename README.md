@@ -1,197 +1,127 @@
 # RamTool
 
-Run a small utility on a bare ESP32 **out of RAM**. Nothing is reflashed between
-edits, and the flash-resident application is never started. You build a payload,
-push it into RAM, and talk to it over the UART the chip is already using.
-
-**Loading and running never writes to flash**, and neither does reading files.
-Writing files does, and only after you say `rw on` — see
-[Writing littlefs](#writing-littlefs), which is also where the guard rails are.
-
-Target is a classic ESP32 (Xtensa LX6), revision 0 through 3.
+Run a small utility on a bare ESP32 **out of RAM**. No reflashing between edits,
+and the flash-resident application is never started. You build a payload, push it
+into RAM, and talk to it over the UART the chip is already using.
 
 ```
-D:\temp\projects\RamTool
-├── build.ps1     cross-compile the payload
-├── run.py        push it into RAM and start it
-├── start.S       entry point: stack, bss, UART handover
-├── payload.c     the utility itself (the part you will edit)
-├── lfsvol.c/.h   read-only littlefs over SPI flash (the 'ls' and 'part' commands)
-├── littlefs/     vendored littlefs v2.9.3, unmodified
-├── rom.h         ROM function and peripheral addresses
-└── ramtool.ld    linker script: where code and data land
+> part
+partitions:
+  nvs  @0x00009000  0x00005000  data sub 0x02
+  app0  @0x00010000  0x00330000  app  sub 0x10
+  spiffs  @0x00670000  0x00180000  data sub 0x82
+> ls
+  [f] config.csv           69
+  [f] pins.csv             153
 ```
 
-## Usage
+Target: classic ESP32 (Xtensa LX6), silicon revision 0 through 3.
+
+## Why
+
+Almost every embedded debugging session ends with the same loop: edit, rebuild,
+flash, reboot, reconnect, repeat. Flashing is slow, it is destructive to whatever
+was on the chip, and it means you cannot work on a board whose firmware you care
+about.
+
+RamTool inverts that. The host uploads a payload into RAM through the serial
+bootloader, jumps to it, and leaves it running. The chip stays alive in RAM while
+you type at it. Nothing reflashes, nothing is overwritten, and the application on
+flash is untouched.
+
+It is also a genuinely pleasant way to poke at a chip: registers, GPIOs, the
+partition table, and files on an internal filesystem, from one prompt.
+
+## Quick start
 
 ```powershell
-.\build.ps1                    # compile to build\iram.bin, build\dram.bin
-python .\run.py -p COM7         # upload to RAM, start it, attach the console
-python .\run.py -p COM7 --boot  # just restart the chip into the bootloader
+.\build.ps1                    # compile to build\iram.bin and build\dram.bin
+python .\run.py --port COM7    # upload to RAM, start it, attach the console
+python .\run.py --boot         # just restart the chip into the bootloader
 ```
 
-Any `python` works. esptool lives in the ESP-IDF venv rather than in whatever
-interpreter happens to be first on `PATH` (on this machine that is a PlatformIO
-`penv`), so `run.py` tries a normal import first and then falls back to the
-standard ESP-IDF install locations, printing which one it used. If it finds
-nothing it lists every path it tried instead of failing with a bare
-`ModuleNotFoundError`.
+`--port` is usually unnecessary. `run.py` uses `$RAMTOOL_PORT` if set, otherwise
+the only serial port it can find, and asks if there is more than one. On Linux
+that looks like `/dev/ttyUSB0`; check with `esptool.py --list-ports`.
 
-`run.py` stays attached. Type commands at the `>` prompt, or Ctrl-C to detach and
-leave the payload running. `--seconds N` bounds the session instead of waiting
-for you; stdin is forwarded either way. To get back to normal firmware, type
-`reboot` (which lands in the bootloader, ready for another `run.py`) or just
-power-cycle.
+`run.py` stays attached: type commands at the `>` prompt, or Ctrl-C to detach and
+leave the payload running. `--seconds N` bounds the session instead.
 
-Commands once it is up:
+See [Building on a clean machine](#building-on-a-clean-machine) if you would rather
+not install an ESP-IDF toolchain on the host.
+
+## Commands
 
 ```
 info                 mac, silicon revision
 g <pin>              read a gpio
-g <pin> <0|1>        set a gpio   ('s <pin> <0|1>' does the same)
+g <pin> <0|1>        set a gpio
 blink <pin> [n] [ms] blink a pin
 r <addr>             read a 32-bit register
 w <addr> <val>       write a 32-bit register
 delay <ms>           delay
-ls [path]            list a littlefs directory
-ls @<offset>         same, at an explicit flash offset
+
 part                 show the partition table
+ls [path]            list a littlefs directory
 cat <path>           print a file
 put <path> <line>    replace a file with one line
 add <path> <line>    append one line to a file
 rm <path>            delete a file
 rw [on|off]          unlock writing; put/add/rm need this
+
 reboot               reset into the download bootloader
-help                 command list
+help                 this list
 ```
 
-Paths cannot contain spaces: the console splits on whitespace and there is no
-quoting, so a name with a space in it is not addressable.
+Paths cannot contain spaces — the console splits on whitespace and there is no
+quoting.
 
-The base payload is around 1.9 KB of code and 0.8 KB of read-only data. Adding
-littlefs took it to about 18 KB of code; adding file writing took it to 25 KB
-total. See [Reading littlefs](#reading-littlefs) and
-[Cost](#cost) for where those numbers come from.
+## What it writes, and when
 
-Edit `payload.c`, re-run `build.ps1` and `run.py`, and you have a new utility in
-a couple of seconds.
+**Loading and running write nothing to flash.** Neither does reading.
+
+Writing files does, and only after you say `rw on`, which prints the exact byte
+range it has unlocked and does not survive a reboot. Every program and erase is
+additionally checked against that range, because littlefs takes its idea of its
+own size from the superblock without validating it — see
+[safe-flash-writes.md](docs/safe-flash-writes.md).
+
+## How it works
+
+- **The esptool stub is the launcher.** The ROM's own loader records the entry
+  address and then ignores it; only the stub performs the call. This is the single
+  most important thing to know about the whole approach.
+- **Two memory windows.** Code and `l32r` literal pools go in IRAM at
+  `0x40080000`. Everything dereferenced at run time — including strings — goes in
+  DRAM at `0x3FFB0000`, because reading a byte out of the IRAM window raises
+  `LoadStoreError` on this part.
+- **No runtime.** No FreeRTOS, no ESP-IDF, no C library. `memcpy` and friends are
+  pointed at the ROM's copies, so they cost zero bytes of payload.
+- **littlefs, read-only by default.** Vendored unmodified; the integration is a
+  block device over the ROM's SPI flash functions, a CRC, and some buffers.
+
+Both windows have `ASSERT`s in the linker script, so an overflow is a link error
+rather than silent corruption at run time.
 
 ## Verified on hardware
 
-Tested against a rev 3.01 part on COM7. The claims that matter, all checked
+Tested against a silicon revision 3 part. The claims that matter, all checked
 rather than assumed:
 
-- **Loading and running write nothing.** SHA-256 over the partition table and the
+- **Loading and running write nothing.** A hash over the partition table and the
   head of the littlefs volume is byte-identical before and after a session that
   mounts the filesystem, lists it, reads files, and has a write attempt refused.
-  Writing is refused unless it has been unlocked, so this holds for anything
-  short of `rw on`.
-- **Writing works, and stays inside the volume.** With `rw on`, the full cycle
-  was run against a real image: `put` created a file, `cat` read it back, `add`
-  appended and `cat` showed both lines, `ls` reported the expected size at each
-  step, and `rm` removed it. The three pre-existing files were still intact
-  afterwards, with their original sizes and contents.
-- **The payload outlives the host.** After `run.py` exits and the port is closed,
-  a fresh raw serial connection still gets a reply to `g 2`. Nothing reset it.
-- **`ls` really reads the filesystem.** It mounts the volume discovered from the
-  partition table and lists what is there, matching the file names and sizes
-  that were written into the image:
+- **Writing works, and stays inside the volume.** With `rw on`, the full cycle was
+  run against a real image: `put` created a file, `cat` read it back, `add`
+  appended and `cat` showed both lines, `ls` tracked the size at each step, `rm`
+  removed it. Pre-existing files were intact afterwards, with original sizes and
+  contents.
+- **The payload outlives the host.** After `run.py` exits and the port is closed, a
+  fresh serial connection still gets a reply. Nothing reset it.
+- **`reboot` lands where it claims**, in the serial bootloader, so the next run
+  needs no keypress.
 
-  ```
-  > part
-  partitions:
-    nvs  @0x00009000  0x00005000  data sub 0x02
-    otadata  @0x0000e000  0x00002000  data sub 0x00
-    app0  @0x00010000  0x00330000  app  sub 0x10
-    app1  @0x00340000  0x00330000  app  sub 0x11
-    spiffs  @0x00670000  0x00180000  data sub 0x82
-    coredump  @0x007f0000  0x00010000  data sub 0x03
-  > ls
-    [f] ECo.csv             69
-    [f] ICo.csv             153
-    [f] WiFi.csv             25
-  ```
-
-  Note that the partition is labelled `spiffs` and typed `0x82`, and the thing in
-  it is littlefs. PlatformIO builds a `littlefs.bin` and writes it into the
-  partition its own tooling expects, so neither the label nor the subtype is
-  reliable evidence of the on-disk format. `ls` does not believe either one: it
-  tries candidates and keeps whichever one actually mounts.
-
-`reboot` also does what it claims: it resets into
-`boot:0x3 (DOWNLOAD_BOOT(UART0))`, and the chip can then be reconnected with
-`connect("no_reset")`, so the next `run.py` needs no keypress.
-
-## Reading littlefs
-
-littlefs is a portable C library. All it needs from the host is a block device,
-a CRC function, and a handful of buffers, so running it from a bare RAM payload
-is not exotic. `lfsvol.c` supplies those three things and a directory walk.
-
-The filesystem is found by reading the partition table at `0x8000`, skipping the
-application slots and the data subtypes that are known not to be filesystems,
-and trying what is left. `block_count` is deliberately passed to `lfs_mount` as
-`0`, which littlefs treats as "read the real value out of the superblock", so
-there is nothing here to keep in step with the partition table. `block_size`
-cannot be defaulted the same way — a mismatch is a hard `LFS_ERR_INVAL` — so a
-short list of likely values is tried in turn.
-
-Four things cost real time here. All four are silent failures.
-
-### `lfs_crc` is not `esp_rom_crc32_le`
-
-This is the one worth internalising. It is very tempting to alias littlefs's
-checksum onto the ROM's CRC helper, because both are reflected CRC-32 with
-polynomial `0xedb88320` and the aliasing costs zero bytes.
-
-They compute different values. littlefs's `lfs_crc` is a 16-entry nibble-table
-CRC that never inverts anything: the seed goes in raw and the result comes out
-raw. `esp_rom_crc32_le` is the same polynomial driven a byte at a time but in
-zlib style, inverting the seed on entry and the result on exit.
-
-The symptom is not a checksum error. Every metadata block fails verification,
-`lfs_dir_fetchmatch` rejects both halves of the superblock pair, and littlefs
-reports only:
-
-```
-Corrupted dir pair at {0x0, 0x1}
-```
-
-which mentions neither checksums nor the real cause. `lfsvol.c` implements
-`lfs_crc` properly instead. It was confirmed against the on-flash CCRC tags of a
-real image: the no-invert form reproduces both superblock copies
-(`0x0bbfbaf6` and `0x4d6d8f92`), the ROM form reproduces neither.
-
-### The function named `esp_rom_spiflash_read_user_cmd` is not a block read
-
-It is a raw single-command reader taking `(status *, cmd)`. Handing it a source
-address and a length does not fault; it hangs, which looks like a dead payload
-rather than a bad argument. The block reader is `esp_rom_spiflash_read`, which
-is the ROM's `SPIRead` at `0x40062ed8`. No ESP-IDF linker script `PROVIDE`s that
-name, so `ramtool.ld` gives it its literal address.
-
-### `lfs_dir_read` returns positive on success
-
-Not `0`. It returns a positive value on success, `0` at end of directory, and a
-negative value on error. Both obvious idioms are wrong: `while ((err =
-lfs_dir_read(...)) == 0)` stops before reading anything, and `if (err) { fail }`
-fires on the very first successful read. Check the sign explicitly.
-
-### On-flash tags are big-endian and XOR-chained
-
-Only relevant if you go reading a raw image without littlefs, but it makes hand
-decoding produce confident nonsense. Each tag is stored big-endian and XORed
-with the previous tag, the chain seeded at `0xffffffff`:
-
-```c
-tag = frombe32(raw) ^ ptag;
-```
-
-Decoding the bytes as little-endian words yields plausible values that do not
-correspond to anything. A size field that looks like `0x00100000` is really
-`block_size` 4096 once the chain is undone.
-
-### Cost
+## Memory footprint
 
 | | IRAM | DRAM image | `.bss` | stack | total RAM |
 |---|---|---|---|---|---|
@@ -199,271 +129,148 @@ correspond to anything. A size field that looks like `0x00100000` is really
 | read-only (`part`, `ls`, `cat`) | 17,988 | 1,744 | 592 | 2,048 | 22,372 |
 | with writing (`put`, `add`, `rm`) | 19,728 | 2,348 | 992 | 2,048 | **25,116** |
 
-So the whole file-I/O feature — read and write — costs **2,744 bytes** over the
-read-only build, and the payload still uses 30% of the IRAM window and 12% of the
-DRAM one. littlefs is nearly all code, and `--gc-sections` is what makes that
-cheap: without it the same link is around 26 KB before any file code is added,
-because the write paths, the file APIs and the allocator plumbing are all pulled
-in regardless. With it, the linker keeps only what is actually reached.
+25 KB of the 94 KB the two windows offer: 30% of IRAM, 12% of DRAM. littlefs is
+nearly all code, and `--gc-sections` is what makes it affordable — without it the
+same link is around 26 KB before any file handling is added.
 
-The `.bss` growth is worth understanding rather than just accepting. `lfs_mount`
-uses `read_buffer` and `prog_buffer` at **`cache_size` bytes each, not
-`block_size`** — not the obvious reading, and 8 KB of DRAM if you get it wrong.
-With `cache_size` at 128 those two plus the lookahead buffer come to 272 bytes.
-An open file needs a third, also `cache_size`, plus one transfer buffer of the
-same size. And the console line buffer grew from 64 to 200 because a
-64-character line is a reasonable register poke and a cramped log entry.
+## All the gotchas discovered
 
-`prog_buffer` has to be supplied even though a read-only listing never writes,
-because under `LFS_NO_MALLOC` `lfs_mount` asserts on a `NULL` one; it just does
-not have to be large.
+Every one of these was found by testing on real hardware, and every one presents as
+something other than what it is. Each has its own write-up.
 
-## Writing littlefs
+**[The ROM loader never calls your entry point](docs/launching-from-ram.md).**
+`MEM_END` writes the address down and returns to the command loop. The esptool
+stub is not a convenience; it is the only thing that jumps to your code.
 
-Writing is the one thing here that can destroy what is on the chip, so it is
-gated and clamped, and the gate lives in the block device rather than in the
-command layer. That placement is deliberate: a mistake in `payload.c` should not
-be able to turn into an erase.
+**[IRAM is for fetching, DRAM is for touching](docs/memory-windows.md).** A byte
+load from the IRAM window raises `LoadStoreError`, so every string literal you
+dereference has to live in DRAM — including `.rodata`.
 
-`rw on` unlocks writing, and prints the exact region it just unlocked. `rw`
-alone reports the current state, `rw off` re-locks. Because the flag lives in
-`.bss`, it does not survive a reboot — re-locking is the default, and so is the
-state after every `run.py`.
+**[Taking the UART away from the ROM needs two moves](docs/uart-handover.md).**
+Clear the peripheral's interrupt enable *and* mask the ISR level. Either alone
+still loses bytes.
+
+**[`uart_rx_one_char` returns 0 on success](docs/uart-handover.md).** And it reads
+through the ROM's own descriptor rather than the hardware FIFO.
+
+**[`waiti` is a trap at an idle prompt](docs/uart-handover.md).** With the UART
+interrupt disabled, it parks the core forever and the console dies at the first
+prompt.
+
+**[`lfs_crc` is not `esp_rom_crc32_le`](docs/littlefs-crc.md).** Same polynomial,
+opposite inversion convention. Every metadata checksum fails and littlefs reports
+only `Corrupted dir pair`.
+
+**[`lfs_dir_read` returns positive on success](docs/littlefs-api-traps.md).** Not
+zero. Both obvious loop idioms are wrong, and one of them treats a successful read
+as a failure.
+
+**[littlefs buffers are `cache_size` bytes, not `block_size`](docs/littlefs-api-traps.md).**
+The obvious reading costs 8 KB of DRAM. And `cache_size = 0` is not "no cache",
+it is a hang.
+
+**[`lfs_file_open` does not exist under `LFS_NO_MALLOC`](docs/littlefs-api-traps.md).**
+A link error, not a runtime failure. Use `lfs_file_opencfg` with your own buffer.
+
+**[littlefs tags are big-endian and XOR-chained](docs/littlefs-disk-format.md).**
+Decode them as little-endian words and you get plausible, confident nonsense that
+sends you debugging the wrong layer.
+
+**[Partition labels and subtypes are not evidence](docs/partition-tables.md).**
+PlatformIO writes a littlefs image into the partition its table labels `spiffs`,
+and the two formats are not readable by each other.
+
+**[The ROM `PROVIDE`s less than you would expect](docs/rom-symbols.md).**
+`SPIRead`, `SPIWrite`, `SPIEraseArea` and the entire libc string family are all in
+there, and none of them is exported.
+
+**[`esp_rom_spiflash_read_user_cmd` is not a block read](docs/flash-access.md).** It
+takes `(status *, cmd)` and *hangs* rather than faulting when given block
+arguments.
+
+**[littlefs's idea of its own size comes off the disk, unchecked](docs/safe-flash-writes.md).**
+Which is why flash writes need a clamp and not merely a lock.
+
+## Repository layout
 
 ```
-> put test.txt hello
-put: writing is locked; 'rw on' first (1000)
-> rw on
-writing enabled, 0x00670000 + 0x00180000. this does not survive a reboot.
-> put test.txt hello
-wrote test.txt
+build.ps1       cross-compile the payload
+run.py          push it into RAM and start it
+Dockerfile      reproducible build on a clean machine
+docker-compose.yml  wrapper for building, and for driving hardware
+start.S         entry point: cache flush, stack, bss, UART handover
+payload.c       the command interpreter (the part you will edit)
+lfsvol.c/.h     littlefs over SPI flash: the file and partition commands
+littlefs/       vendored littlefs, unmodified (see ORIGIN.md)
+rom.h           ROM function and peripheral addresses
+ramtool.ld      linker script: where code and data land
+docs/           the notes linked above
+LICENSE         BSD-3-Clause
 ```
 
-### The clamp is the half that matters
+## Building on a clean machine
 
-Unlocking alone would be nearly worthless, because of how `block_count` works.
-`lfs_mount` is deliberately handed `block_count` 0, which tells littlefs to read
-the real value out of the superblock. That is exactly right for mounting: there
-is then no partition size to keep in step with. But it means the filesystem's
-idea of how big it is comes off the disk and is not checked against anything.
+The build needs an Xtensa toolchain and ESP-IDF's ROM linker scripts. Rather than
+hardcode anyone's install path, `build.ps1` finds them:
 
-A corrupt or hostile superblock claiming `block_count` 100000 at `block_size`
-4096 describes 400 MB, and every one of those blocks would be a legal erase —
-including the running application and NVS. So `bd_prog` and `bd_erase` both
-check the address against the region `rw on` established, and `rw on` takes that
-region from the partition table's own size, rounded down to a whole number of
-blocks. The boundary is on a block edge so the clamp can never disagree with
-littlefs about where the volume ends.
+1. `-ToolchainPath` / `-RomLdPath` arguments, if given;
+2. `$env:IDF_PATH` for the ROM scripts, and the toolchain under `$env:IDF_TOOLS_PATH`;
+3. `xtensa-esp32-elf-gcc` on `PATH`.
 
-Which is also why `rw on @<offset>` requires an explicit size: with no partition
-size there is nothing to clamp against, and `lfsvol_write_enable` refuses that
-combination rather than guessing.
-
-### `lfs_file_open` does not exist under `LFS_NO_MALLOC`
-
-Not "returns an error" — the symbol is absent. `lfs.c:6053` wraps it in
-`#ifndef LFS_NO_MALLOC`, so with our flags the link fails outright:
-
-```
-undefined reference to `lfs_file_open'
+```sh
+export IDF_PATH=/path/to/esp-idf
+./build.ps1
 ```
 
-`lfs.h:577` says so in advance: *"if LFS_NO_MALLOC is defined, lfs_file_open()
-will fail with LFS_ERR_NOMEM, thus use lfs_file_opencfg() with config.buffer
-set."* File access therefore goes through `lfs_file_opencfg` with a buffer we
-own, and that buffer wants `cache_size` bytes — the same size as the mount
-caches. The config struct is zeroed first, because `attr_count` of 0 is what
-littlefs checks to decide there are no attributes to look for.
+If esptool is not installed in the active interpreter, `run.py` falls back to an
+ESP-IDF checkout's own environment; otherwise `pip install esptool` is enough.
 
-This is the same family of trap as `prog_buffer` in the read-only build: under
-`LFS_NO_MALLOC` every buffer has to be supplied by hand, and the failure mode is
-either a link error or an assertion rather than something descriptive.
+### In a container
 
-### Erase takes an address, not a block
+`Dockerfile` builds the payload with **the same `build.ps1` the host uses**, so a
+green container build is real evidence the repository has no machine-specific
+dependencies left in it — not a parallel build script that could quietly drift.
 
-`esp_rom_spiflash_erase_area(start_addr, area_len)` is given a byte range, where
-littlefs thinks in blocks, so `bd_erase` translates. It assumes `block_size`
-equals the flash sector size, which holds for every volume seen here. A volume
-with sub-sector blocks would need the containing sector erased instead, and
-`write_permitted` widened to match. Both are noted in `lfsvol.c` rather than left
-implicit.
-
-### Interrupts being masked is not a problem for writes
-
-This was the open question, because `start.S` masks ISR levels to stop the ROM's
-UART handler stealing console bytes, and the read path had already hung once for
-a reason that looked unrelated. The ROM's `SPIWrite` polls rather than waiting on
-an interrupt, so it works with interrupts masked — verified on hardware, not
-assumed.
-
-littlefs v2.9.3 is vendored unmodified in `littlefs/`, pinned to commit
-`d01280e6` with the licence text alongside; `littlefs/ORIGIN.md` records where
-it came from and how to re-verify that it is still pristine. The build flags it
-needs are in `build.ps1`. Those flags are not optional. `LFS_NO_DEBUG`,
-`LFS_NO_WARN` and `LFS_NO_ERROR` all expand to `printf`, which does not exist
-here, and without all three the link fails on undefined references.
-`LFS_NO_MALLOC` and `LFS_NO_THREADSAFE` remove the allocator and the mutex;
-there is no heap and one task. `LFS_NO_ASSERT` drops `assert()`, which is also
-absent.
-
-Two debugging notes for next time. `lfs_util.h` only defines `LFS_ERROR` when it
-is not already defined, so `-DLFS_ERROR(...)=my_reporter(__LINE__)` on the
-command line replaces `printf` with a line-number reporter and turns a
-contentless "Corrupted dir pair" into the exact failing check. And when reading
-an image by hand, remember the tag chain above: it is the difference between a
-superblock that reads sensibly and one that does not.
-
-## Why there is a host script at all
-
-esptool's CLI resets the chip when it finishes. That is the default
-(`--after hard_reset`) and it is right for flashing and wrong for this: the reset
-undoes the whole point. `--after no_reset_stub` helps, but it still leaves the
-flasher stub resident and still needs a second command to actually run the code.
-
-`run.py` drives the esptool Python API instead, and never calls `hard_reset()` or
-`soft_reset()`. It also deasserts DTR and RTS before closing the port, because on
-the usual CP210x auto-reset wiring RTS low pulls EN low and would reset the part
-behind your back.
-
-## Two things that will bite you
-
-Both of these were found by testing on real hardware and both are silent
-failures if you do not know about them.
-
-### The ROM loader does not call your entry point
-
-The natural approach is to skip esptool's stub entirely: connect to the ROM,
-then MEM_BEGIN / MEM_DATA / MEM_END with the entry address. That does not work.
-
-MEM_END with a non-zero entry does **not** call the entry. The ROM's
-`MemDwnLdStopReqMsgProc` only stores the address into the `user_code_start` word
-at `0x3ffe0400` and returns into the command loop. On a normal boot, `main` reads
-that word and `callx8`es it — but the download-mode path never reaches that code,
-so the address is recorded and then ignored. The chip sits there answering
-nothing, which looks exactly like a crash.
-
-The esptool **stub** is what performs the call. `run_stub()` uploads a ~3.5 KB
-loader to IRAM `0x400be000`, and the stub's own MEM_END handler jumps to the entry
-you hand it. The stub is not optional here; it is the launch mechanism. It is
-still a RAM upload, so nothing touches flash.
-
-### IRAM and DRAM are different windows onto different memory
-
-Reading a byte out of the IRAM window at `0x40080000` raises `LoadStoreError` on
-this part, even though the bytes are demonstrably there (verified by reading them
-back through the stub after upload). The instruction and data ports address IRAM
-through different aliases.
-
-The practical consequence: **code goes in IRAM, and anything you dereference at
-run time goes in DRAM.** That includes strings. `ramtool.ld` puts `.rodata` in
-the DRAM region for exactly this reason, and `run.py` sends the two regions as two
-separate MEM_BEGIN transfers.
-
-## Memory map
-
-| Region | Address | Size | Contents |
-|---|---|---|---|
-| IRAM | `0x40080000` | 64 KB | code, `l32r` literal pools |
-| DRAM | `0x3FFB0000` | 28 KB | `.rodata`, `.bss`, stack |
-
-Both are clear of everything else that is resident at run time:
-
-- The esptool stub sits at `0x400BE000` (text), `0x3FFCC000` (bss) and
-  `0x3FFD EBAC` (data). The IRAM window above `0x40080000` with 64 KB of room
-  never reaches it, and the DRAM window stops well below `0x3FFCC000`.
-- The ROM's own `.bss_btdm` starts at `0x3FFB8000`, so the 28 KB DRAM window
-  starting at `0x3FFB0000` ends before it.
-- The linker script `ASSERT`s both bounds, so an overflow is a link error rather
-  than a silent memory corruption at run time.
-
-The entry point is `ramtool_entry`, deliberately not `_start`: ESP-IDF's
-`esp32.rom.ld` does `PROVIDE (_start = 0x40000704)`, and colliding with that name
-is a quiet way to end up with the wrong address.
-
-## Startup
-
-`start.S` does four things, in this order:
-
-1. **Flushes the I-cache** (`Cache_Flush_rom`). The first fetch after this
-   refills from memory, which is where the host just wrote the code.
-2. **Installs its own stack** from the DRAM window. The ROM's stack is live above
-   us and we do not know how deep it has already gone.
-3. **Zeroes `.bss`.** It is `NOLOAD`, so it is not in the downloaded image and the
-   ROM does not clear it for us.
-4. **Takes UART0 away from the ROM.** This needs two steps and neither alone is
-   enough. Masking the CPU interrupt level stops `uart_rx_intr_handler` being
-   scheduled, but the UART's own interrupt-enable register is still set and the
-   handler is still attached, so bytes still went missing. Clearing `INT_ENA` and
-   `INT_CLR` at the peripheral is what actually makes the FIFO ours to poll. With
-   only the level mask, the console dropped bytes; with both, it is solid.
-
-It then calls `ramtool_main`, which never returns. That is deliberate: the entry
-is reached via `callx8`, so there is a live return address, and returning would
-drop us back into the ROM's normal flash-boot path.
-
-## Things the payload deliberately does not do
-
-**`waiti` at the console prompt.** It looks like the obvious way to idle while
-waiting for input, and it is a trap. `waiti` parks the core until an interrupt
-arrives, and startup deliberately cleared the UART interrupt enable. With no
-interrupt source left, `waiti` never returns and the console dies the moment it
-goes idle. `read_line` polls instead. The cost is a spinning core while you sit at
-the prompt, which is the right trade for a tool with nothing else to do.
-
-**ROM `uart_rx_one_char`.** It returns 0 on success and non-zero when the FIFO is
-empty — the opposite of what the name suggests — and it reads through the ROM's
-own `UartDev` descriptor rather than the hardware port. The payload polls the
-status register's low byte (the receive-FIFO count) directly.
-
-**First-character dispatch.** Matching on one letter silently mis-routes anything
-that starts the same way. `s 2 1` (set a gpio) came out as an unknown command
-while `bogus` was cheerfully treated as `blink`. `word_is()` matches whole words
-and rejects prefixes.
-
-**A reader thread running during `mem_finish`.** The stub does answer MEM_END, so
-esptool reads a four-byte SLIP reply. A console reader started early races
-esptool for those same bytes and drops characters from the banner without any
-error. The launch happens first, then the reader attaches.
-
-## Growing it
-
-The payload is a resident command loop, which is the useful shape for this: the
-chip is alive in RAM and you can poke it over the UART. To add a capability, add a
-function in `payload.c` and a `word_is()` arm in the dispatch chain.
-
-For anything filesystem-shaped, add to `lfsvol.c` instead and call it from
-`payload.c`. The block device, the CRC and the buffers are all already there,
-and `lfsvol_list` hands entries to a callback rather than buffering them, which
-matters because a name can be 255 bytes and a directory can hold a lot of them.
-`ls @<offset>` is the fastest way to point the existing machinery at a volume
-while you work on it.
-
-Two constraints to keep in mind when you do:
-
-- Everything you dereference at run time has to be in the DRAM region. If you add
-  a `.data` initialiser or a string, the linker script already places it there;
-  if you add an assembly section by hand, put it in `.dram_img`, not
-  `.iram_img`.
-- `ramtool.ld` only carries the code and read-only sections into the downloaded
-  images. Anything else has to be added to one of them or it will read as zeros.
-
-Build flags worth knowing about, all in `build.ps1`:
-
-- `-mlongcalls` is mandatory. The payload is at `0x40080000` and the ROM functions
-  it calls are around `0x4000xxxx`, well outside the range of a plain `call`. The
-  literal pools this forces live in `.xt.lit`, which the linker script keeps in
-  IRAM.
-- `-fno-builtin -ffreestanding` and `-nostdlib` because there is no C runtime.
-  `memcpy`, `memset`, 64-bit division and the rest resolve to the copies in ROM
-  via `esp32.rom.libgcc.ld`.
-
-The ROM addresses in `rom.h` were read out of the ELF files that ship with
-ESP-IDF (`C:\Espressif\tools\esp-rom-elfs\20241011\esp32_rev0_rom.elf` and
-`esp32_rev300_rom.elf`) and cross-checked against
-`components/esp_rom/esp32/ld/esp32.rom.ld`. Both revisions agree on every address
-used here, so one table covers the family. To verify for yourself:
-
-```powershell
-& 'C:\Espressif\tools\xtensa-esp-elf\esp-14.2.0_20260121\xtensa-esp-elf\bin\xtensa-esp32-elf-nm.exe' `
-    'C:\Espressif\tools\esp-rom-elfs\20241011\esp32_rev0_rom.elf' | Select-String 'ets_printf|uart_tx_one_char'
+```sh
+docker build -t ramtool .
+docker run --rm -v "$PWD/build:/src/build" ramtool ls -l /src/build
 ```
+
+It pins ESP-IDF v5.5.4 (xtensa-esp-elf 14.2.0) and installs PowerShell so the
+build script runs unmodified. `docker-compose.yml` wraps the two things people
+actually want:
+
+```sh
+docker compose build                    # build the payload in the container
+docker compose run --rm tools           # list the artifacts it produced
+docker compose --profile flash run --rm flash   # drive real hardware
+```
+
+Driving hardware from the container needs the serial device passed through, which
+is reliable on a Linux Docker host and unreliable under Docker Desktop on Windows
+and macOS. There, build in the container and run `run.py` on the host — the
+artifacts land in `./build` either way, so nothing is lost.
+
+The container builds and verifies the artifacts; it does **not** pretend to test
+against hardware. Runtime behaviour is the part only a real chip can confirm, and
+that is what the [Verified on hardware](#verified-on-hardware) section is for.
+
+## Notes on style
+
+Deliberate choices that look odd and are not:
+
+- **The entry point is `ramtool_entry`, not `_start`.** `esp32.rom.ld` does
+  `PROVIDE (_start = 0x40000704)`; colliding with that name silently yields the
+  wrong address.
+- **Commands dispatch on whole words.** A first-character switch quietly mis-routes
+  anything sharing a first letter.
+- **The console polls; it never uses `waiti`.**
+- **littlefs is vendored unmodified.** All integration lives outside it.
+
+## Licence
+
+BSD-3-Clause, matching the vendored littlefs. See [LICENSE](LICENSE).
+
+littlefs itself is BSD-3-Clause, copyright the littlefs authors and Arm Limited;
+its notice is in [`littlefs/LICENSE.md`](littlefs/LICENSE.md) and its provenance in
+[`littlefs/ORIGIN.md`](littlefs/ORIGIN.md).
