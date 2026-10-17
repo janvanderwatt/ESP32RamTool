@@ -161,9 +161,9 @@ rather than assumed:
 | base payload, no littlefs | 1,868 | 764 | 72 | 2,048 | 4,752 |
 | read-only (`part`, `ls`, `cat`) | 17,988 | 1,744 | 592 | 2,048 | 22,372 |
 | with writing (`put`, `add`, `rm`) | 19,728 | 2,348 | 992 | 2,048 | **25,116** |
-| with SPI SD / FatFs (current release) | 32,092 | 4,536 | 4,648 | 2,048 | **43,324** |
+| with SPI SD / FatFs (current release) | 32,092 | 4,536 | 2,600 | 2,048 | **41,276** |
 
-The current release uses about 43 KB of the 94 KB the two windows offer.
+The current release uses 40.3 KiB of the 92 KiB the two windows offer.
 The figures above include the reserved stack; linker assertions enforce both
 memory windows. Filesystem objects and working buffers are static, with no heap.
 
