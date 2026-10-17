@@ -69,12 +69,44 @@ add <path> <line>    append one line to a file
 rm <path>            delete a file
 rw [on|off]          unlock writing; put/add/rm need this
 
+sd init              mount SPI SD (FlotSense pins by default)
+sd ls [path]         list a FAT directory
+sd cat <path>        print an SD file
+sd put <path> <line> replace an SD file with one line
+sd add <path> <line> append one line to an SD file
+sd mkdir <path>      create an SD directory
+sd rm <path>         remove an SD file or empty directory
+sd rw [on|off]       separately unlock SD writing
+sd off              unmount SD and lock writing
+
 reboot               reset into the download bootloader
 help                 this list
 ```
 
 Paths cannot contain spaces — the console splits on whitespace and there is no
 quoting.
+
+## SPI SD cards
+
+Run `sd init`, then `sd rw on` to enable SD file writes. The defaults match
+FlotSense: SCLK 18, MOSI 23, MISO 19, SD CS 2; screen CS 12 and PT100 CS 32
+are held high on the shared bus. For example:
+
+```text
+sd init
+sd rw on
+sd put /TEST.TXT hello from RamTool
+sd cat /TEST.TXT
+sd rw off
+sd off
+```
+
+Supports existing FAT12/16/32 volumes, long UTF-8 filenames, and SDSC/SDHC/SDXC
+over software SPI. exFAT is unsupported. Mounting never formats the card;
+SD access starts only at `sd init`. See [SD card support](docs/sd-card.md)
+for custom pins, limitations, research references, and hardware checks.
+The SD feature passes simulated-card tests and has **not yet been verified
+on physical hardware**.
 
 ## What it writes, and when
 
@@ -105,7 +137,8 @@ rather than silent corruption at run time.
 
 ## Verified on hardware
 
-Tested against a silicon revision 3 part. The claims that matter, all checked
+The existing internal-flash functionality was tested against a silicon revision 3 part.
+The claims that matter, all checked
 rather than assumed:
 
 - **Loading and running write nothing.** A hash over the partition table and the
@@ -128,10 +161,11 @@ rather than assumed:
 | base payload, no littlefs | 1,868 | 764 | 72 | 2,048 | 4,752 |
 | read-only (`part`, `ls`, `cat`) | 17,988 | 1,744 | 592 | 2,048 | 22,372 |
 | with writing (`put`, `add`, `rm`) | 19,728 | 2,348 | 992 | 2,048 | **25,116** |
+| with SPI SD / FatFs (current release) | 32,092 | 4,536 | 4,648 | 2,048 | **43,324** |
 
-25 KB of the 94 KB the two windows offer: 30% of IRAM, 12% of DRAM. littlefs is
-nearly all code, and `--gc-sections` is what makes it affordable — without it the
-same link is around 26 KB before any file handling is added.
+The current release uses about 43 KB of the 94 KB the two windows offer.
+The figures above include the reserved stack; linker assertions enforce both
+memory windows. Filesystem objects and working buffers are static, with no heap.
 
 ## All the gotchas discovered
 
@@ -210,6 +244,11 @@ start.S         entry point: cache flush, stack, bss, UART handover
 payload.c       the command interpreter (the part you will edit)
 lfsvol.c/.h     littlefs over SPI flash: the file and partition commands
 littlefs/       vendored littlefs, unmodified (see ORIGIN.md)
+sdgpio.c        software SPI and shared-bus GPIO setup
+sdspi.c/.h      SD card protocol and FatFs block-device adapter
+sdvol.c/.h      FAT file commands and independent write lock
+fatfs/          vendored FatFs R0.16 (see ORIGIN.md)
+tests/          simulated SD protocol and FAT regression tests
 rom.h           ROM function and peripheral addresses
 ramtool.ld      linker script: where code and data land
 tools/serial_bridge.py  reach a host serial port from a container
@@ -303,3 +342,6 @@ BSD-3-Clause, matching the vendored littlefs. See [LICENSE](LICENSE).
 littlefs itself is BSD-3-Clause, copyright the littlefs authors and Arm Limited;
 its notice is in [`littlefs/LICENSE.md`](littlefs/LICENSE.md) and its provenance in
 [`littlefs/ORIGIN.md`](littlefs/ORIGIN.md).
+
+FatFs is copyright ChaN and uses its own permissive license; see
+[`fatfs/LICENSE.txt`](fatfs/LICENSE.txt) and [`fatfs/ORIGIN.md`](fatfs/ORIGIN.md).

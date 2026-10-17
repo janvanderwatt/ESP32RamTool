@@ -87,6 +87,8 @@ COPY --from=build /src/README.md   README.md
 COPY --from=build /src/LICENSE     LICENSE
 COPY --from=build /src/littlefs/ORIGIN.md    littlefs/ORIGIN.md
 COPY --from=build /src/littlefs/LICENSE.md    littlefs/LICENSE.md
+COPY --from=build /src/fatfs/ORIGIN.md        fatfs/ORIGIN.md
+COPY --from=build /src/fatfs/LICENSE.txt      fatfs/LICENSE.txt
 
 # No CMD: the image is a vehicle for either
 #   docker run --rm ramtool ls -l build
