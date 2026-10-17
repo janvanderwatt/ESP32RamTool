@@ -1,5 +1,10 @@
 # The ROM `PROVIDE`s less than you would expect
 
+**Normal builds use the checked-in [rom/esp32.ld](../rom/esp32.ld). No SDK ROM
+scripts or ROM ELF extraction are required.** The notes below explain the
+historical SDK export gaps that led to the pinned table. See
+[ROM provenance](../rom/README.md) for current maintenance instructions.
+
 **`SPIRead`, `SPIWrite`, `SPIEraseArea` and the whole libc string family are in the
 ROM, and not one of them is exported by ESP-IDF's linker scripts.**
 
@@ -16,7 +21,8 @@ are reached through C code in `esp_rom`'s own sources rather than directly. Call
 one from a bare payload and you get an undefined reference to a name that looks
 perfectly reasonable.
 
-The fix is a `PROVIDE` with a literal address, in your own linker script:
+The fix is a `PROVIDE` with a literal address. RamTool now keeps all of these
+bindings, including the SDK-exported aliases, in `rom/esp32.ld`:
 
 ```ld
 PROVIDE ( esp_rom_spiflash_read = 0x40062ed8 ); /* SPIRead */
@@ -49,21 +55,23 @@ which matters when littlefs alone calls `memcpy`, `memset`, `memcmp`, `strlen` a
 `strcpy`. The linker discards the `PROVIDE`s nothing references, so the list is
 cheap to keep complete.
 
-## Verifying an address yourself
+## Verifying addresses when maintaining the table
 
-Do not trust a table, including this one. ESP-IDF ships the ROM ELFs with
-matching symbol tables; read the address straight out of them.
+This is an optional maintenance audit, not a build or runtime requirement.
+ESP-IDF distributes ROM ELFs with symbol tables. The checked-in verifier reads
+them directly using Python, without `nm`, esptool, or wildcard executable paths:
 
 ```powershell
-& "$env:IDF_TOOLS_PATH\xtensa-esp-elf\*\bin\xtensa-esp32-elf-nm.exe" `
-    "$env:IDF_TOOLS_PATH\esp-rom-elfs\*\esp32_rev0_rom.elf" |
-    Select-String 'SPIRead|SPIWrite|SPIEraseArea|memcpy'
+python tools/verify_rom_symbols.py `
+    --rev0 C:\path\to\esp32_rev0_rom.elf `
+    --rev3 C:\path\to\esp32_rev300_rom.elf `
+    --payload build/ramtool.elf
 ```
 
-Two files matter: `esp32_rev0_rom.elf` and `esp32_rev300_rom.elf`. **Check both.**
-Every address in the table above is identical in both, which is what lets one
-table cover the whole family — but that is a property to verify per address, not
-to assume.
+Both files must match every pinned address. All 31 entries have been checked
+against both revisions; their provenance and ELF hashes are recorded in
+`rom/README.md`. Repeat verification when changing the table or adding chip
+support, rather than rediscovering addresses during ordinary builds.
 
 The `PROVIDE`s for `ets_isr_mask` and `ets_isr_unmask` are needed for a different
 reason: the names are the ROM's own, and nothing exports them under those names

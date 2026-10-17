@@ -13,9 +13,8 @@
  * never appear in the downloaded image.
  */
 
-/* The entry is called ramtool_entry, not _start, on purpose: ESP-IDF's
- * esp32.rom.ld does `PROVIDE (_start = 0x40000704)`, and letting that name
- * collide is a silent way to end up with the wrong address. */
+/* Retain the distinct payload entry name. Older SDK-based builds imported a
+ * ROM _start symbol at 0x40000704; our pinned table excludes it. */
 ENTRY(ramtool_entry)
 
 MEMORY
@@ -106,45 +105,7 @@ SECTIONS
   }
 }
 
-/* Not exported by esp32.rom.api.ld, but present and identical in the rev0 and
- * rev3 ROM images. Needed to detach the ROM's UART receive interrupt so it
- * stops stealing bytes from the payload's own console. */
-PROVIDE ( ets_isr_mask   = 0x400067fc );
-PROVIDE ( ets_isr_unmask = 0x40006808 );
-
-/* The ROM's SPI flash block reader, called SPIRead. ESP-IDF reaches it from C as
- * esp_rom_spiflash_read, but no linker script PROVIDEs that name, so it is given
- * its literal address here. Verified identical in both ROM ELFs.
- *
- * Do not confuse it with SPI_read_status / esp_rom_spiflash_read_user_cmd, which
- * take a status pointer and a command byte and are not block reads at all. */
-PROVIDE ( esp_rom_spiflash_read = 0x40062ed8 );
-
-/* The ROM's flash writer and eraser, same story as SPIRead: present in both
- * ROM ELFs, PROVIDEd by none of ESP-IDF's scripts. Addresses from
- * components/esp_rom/esp32/include/esp32/rom/spi_flash.h, cross-checked against
- * the ELF symbol table. */
-PROVIDE ( esp_rom_spiflash_write      = 0x40062d50 ); /* SPIWrite      */
-PROVIDE ( esp_rom_spiflash_erase_area = 0x400631ac ); /* SPIEraseArea  */
-
-/* The ROM contains newlib's string routines, so there is no need to link a
- * second copy: littlefs calls memcpy/memset/strlen and friends, and pointing
- * them at the ROM's copies costs zero bytes of payload. Addresses read from the
- * ROM ELFs and identical in rev0 and rev3.
- *
- * Only the ones something actually references survive -- the linker discards the
- * rest, so this list is cheap to keep complete. */
-PROVIDE ( memcpy   = 0x4000c2c8 );
-PROVIDE ( memmove  = 0x4000c3c0 );
-PROVIDE ( memset   = 0x4000c44c );
-PROVIDE ( memcmp   = 0x4000c260 );
-PROVIDE ( strcpy   = 0x400013ac );
-PROVIDE ( strlen   = 0x400014c0 );
-PROVIDE ( strcat   = 0x4000c518 );
-PROVIDE ( strchr   = 0x4000c53c );
-PROVIDE ( strcspn  = 0x4000c558 );
-PROVIDE ( strspn   = 0x4000c648 );
-PROVIDE ( strncmp  = 0x4000c5f4 );
+/* Fixed ROM bindings live in rom/esp32.ld, linked by build.ps1. */
 
 /* lfs_util.c is not compiled: lfs_crc is defined in lfsvol.c instead. See the
  * long note there, because getting it wrong is subtle and expensive. */

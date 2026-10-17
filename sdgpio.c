@@ -2,8 +2,6 @@
 #include "rom.h"
 #include "sdspi.h"
 
-extern void esp_rom_gpio_connect_out_signal(uint32_t gpio, uint32_t signal,
-                                           int invert, int invert_enable);
 static uint8_t bus[4];
 static void level(unsigned pin, int high)
 {
