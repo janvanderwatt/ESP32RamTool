@@ -105,8 +105,8 @@ Supports existing FAT12/16/32 volumes, long UTF-8 filenames, and SDSC/SDHC/SDXC
 over software SPI. exFAT is unsupported. Mounting never formats the card;
 SD access starts only at `sd init`. See [SD card support](docs/sd-card.md)
 for custom pins, limitations, research references, and hardware checks.
-The SD feature passes simulated-card tests and has **not yet been verified
-on physical hardware**.
+The SD feature passes simulated-card tests and has been verified on physical
+hardware; see [Verified on hardware](#verified-on-hardware).
 
 ## What it writes, and when
 
@@ -137,9 +137,8 @@ rather than silent corruption at run time.
 
 ## Verified on hardware
 
-The existing internal-flash functionality was tested against a silicon revision 3 part.
-The claims that matter, all checked
-rather than assumed:
+The internal-flash and SPI SD paths were both exercised against a silicon
+revision 3 part. The claims that matter, all checked rather than assumed:
 
 - **Loading and running write nothing.** A hash over the partition table and the
   head of the littlefs volume is byte-identical before and after a session that
@@ -149,6 +148,14 @@ rather than assumed:
   appended and `cat` showed both lines, `ls` tracked the size at each step, `rm`
   removed it. Pre-existing files were intact afterwards, with original sizes and
   contents.
+- **The SPI SD card reads and writes on real hardware.** Against an ESP32 rev 3.1
+  and a card reporting 61,069,312 sectors, `sd init` mounted the existing FAT
+  volume, `sd ls` listed its files and directories, and with `sd rw on` the cycle
+  was run end to end: `sd put` created `/RAMTEST.TXT`, `sd cat` read it back,
+  `sd add` appended and `sd cat` showed both lines, `sd ls` tracked the size, and
+  `sd rm` removed it. Pre-existing card files and directories were intact
+  afterwards, and the default FlotSense pins (SCK 18, MOSI 23, MISO 19, SD CS 2,
+  screen CS 12, PT100 CS 32) were used unchanged.
 - **The payload outlives the host.** After `run.py` exits and the port is closed, a
   fresh serial connection still gets a reply. Nothing reset it.
 - **`reboot` lands where it claims**, in the serial bootloader, so the next run

@@ -114,8 +114,19 @@ existing IRAM/DRAM assertions. `tests/sd_test.c` exercises the real driver and
 FatFs over a simulated card at the SPI byte boundary. See
 [tests/README.md](../tests/README.md) for instructions.
 
-**The SD feature has not been tested on physical hardware.** Before relying
-on it, use a backed-up card, run the example write/read/append/delete cycle,
-unmount, then check the files and filesystem on a PC. Confirm that unrelated
-files and the internal flash contents remain intact. Check bus behavior with
-the screen and PT100 connected, including after a warm MCU reset.
+**The SD feature has also been verified on physical hardware.** On 2026-10-17,
+against an ESP32 rev 3.1 and a card reporting 61,069,312 sectors, the default
+FlotSense pins (SCK 18, MOSI 23, MISO 19, SD CS 2, screen CS 12, PT100 CS 32)
+were used to mount the existing FAT volume and run the full write cycle:
+`sd init`, `sd ls`, `sd rw on`, `sd put`/`sd cat`/`sd add`/`sd cat` on
+`/RAMTEST.TXT`, `sd ls`, `sd rm`, `sd rw off`, `sd off`. Pre-existing card
+files and directories were intact afterwards. The internal littlefs volume was
+exercised with the same `rw on` … `rw off` cycle in the same session and its
+pre-existing files were unchanged. This confirms the transport and file paths
+on one card and board; it is not a substitute for checking a specific setup.
+
+When bringing up a new socket or card, use a backed-up card, run the example
+write/read/append/delete cycle, unmount, then check the files and filesystem
+on a PC. Confirm that unrelated files and the internal flash contents remain
+intact. Check bus behavior with the screen and PT100 connected, including after
+a warm MCU reset.
