@@ -217,7 +217,12 @@ $asmCommon = @(
 $srcs = @(
     @{ file = 'start.S';   args = $asmCommon },
     @{ file = 'payload.c'; args = $common },
-    @{ file = 'lfsvol.c';  args = $common }
+    @{ file = 'lfsvol.c';  args = $common },
+    @{ file = 'sdgpio.c';  args = $common },
+    @{ file = 'sdspi.c';   args = $common },
+    @{ file = 'sdvol.c';   args = $common },
+    @{ file = 'fatfs/ff.c'; args = $common },
+    @{ file = 'fatfs/ffunicode.c'; args = $common }
 )
 
 # littlefs is third-party and does not compile clean under our warning set, so

@@ -12,6 +12,8 @@
 
 #include "lfsvol.h"
 #include "rom.h"
+#include "sdvol.h"
+#include "sdspi.h"
 
 /* The ROM's printf is newlib's, so it supports the usual conversions. Keeping
  * the format strings in .rodata (which the linker script puts in IRAM) is what
@@ -500,7 +502,7 @@ static void cmd_ls(const char *p)
 /* Pull a path off the front of the line. Paths cannot contain spaces here,
  * because the console splits on whitespace and there is no quoting; a name with
  * a space in it is simply not addressable. Returns 0 if there was no path. */
-static int take_path(const char **pp, char *out, int out_max)
+static int take_path_token(const char **pp, char *out, int out_max)
 {
     const char *p = *pp;
     int i = 0;
@@ -508,8 +510,8 @@ static int take_path(const char **pp, char *out, int out_max)
     while (*p == ' ' || *p == '\t') {
         p++;
     }
-    if (*p == '\0' || *p == '/') {
-        return 0; /* a bare '/' is the root, not a filename */
+    if (*p == '\0') {
+        return 0;
     }
     while (*p && *p != ' ' && *p != '\t') {
         if (i + 1 >= out_max) {
@@ -524,6 +526,15 @@ static int take_path(const char **pp, char *out, int out_max)
     }
     *pp = p;
     return 1;
+}
+
+/* Preserve the original littlefs command path rules. SD accepts absolute
+ * paths, including '/' for listing, through take_path_token directly. */
+static int take_path(const char **pp, char *out, int out_max)
+{
+    skip_space(pp);
+    if (**pp == '/') return 0;
+    return take_path_token(pp, out, out_max);
 }
 
 #define PATH_MAX 64
@@ -677,6 +688,87 @@ static void cmd_rm(const char *p)
     putch_('\n');
 }
 
+static void cmd_sd(const char *p)
+{
+    int err = 0;
+    char path[128];
+    if (word_is(&p, "init")) {
+        uint8_t pins[6] = {18, 23, 19, 2, 12, 32};
+        if (*p) {
+            for (unsigned i = 0; i < 6; i++) {
+                if (*p < '0' || *p > '9') goto usage;
+                uint32_t v = 0;
+                do {
+                    v = v * 10u + (uint32_t)(*p++ - '0');
+                    if (v > 255) goto usage;
+                } while (*p >= '0' && *p <= '9');
+                if (*p && *p != ' ' && *p != '\t') goto usage;
+                pins[i] = (uint8_t)v;
+                skip_space(&p);
+            }
+            if (*p) goto usage;
+        }
+        err = sdvol_init(pins);
+        if (!err) {
+            puts_("SD mounted, writing locked. pins SCK/MOSI/MISO/CS/idle-CS: ");
+            for (unsigned i = 0; i < 6; i++) {
+                print_u32(pins[i]); putch_(i == 5 ? '\n' : '/');
+            }
+            puts_("sectors: "); print_u32(sdspi_sectors()); putch_('\n');
+        }
+    } else if (word_is(&p, "rw")) {
+        if (!*p) {
+            puts_(sdvol_writable() ? "SD writing enabled\n" : "SD writing locked\n");
+        } else {
+            int on;
+            if (word_is(&p, "on")) on = 1;
+            else if (word_is(&p, "off")) on = 0;
+            else goto usage;
+            if (*p) goto usage;
+            err = sdvol_unlock(on);
+            if (!err) puts_(on ? "SD writing enabled until off/init/reboot\n" : "SD writing locked\n");
+        }
+    } else if (word_is(&p, "off")) {
+        if (*p) goto usage;
+        sdvol_off();
+        puts_("SD unmounted, writing locked\n");
+    } else if (word_is(&p, "ls")) {
+        if (!*p) err = sdvol_ls("/", ls_visit, 0);
+        else {
+            if (!take_path_token(&p, path, sizeof(path)) || *p) goto usage;
+            err = sdvol_ls(path, ls_visit, 0);
+        }
+    } else if (word_is(&p, "cat")) {
+        if (!take_path_token(&p, path, sizeof(path)) || *p) goto usage;
+        err = sdvol_cat(path, cat_emit, 0);
+    } else {
+        int op;
+        if (word_is(&p, "put")) op = 0;
+        else if (word_is(&p, "add")) op = 1;
+        else if (word_is(&p, "rm")) op = 2;
+        else if (word_is(&p, "mkdir")) op = 3;
+        else goto usage;
+        if (!take_path_token(&p, path, sizeof(path))) goto usage;
+        if (op < 2) {
+            if (!*p) goto usage;
+            err = sdvol_line(path, p, op);
+        } else {
+            if (*p) goto usage;
+            err = op == 2 ? sdvol_rm(path) : sdvol_mkdir(path);
+        }
+        if (!err) puts_("SD ok\n");
+    }
+    if (err) {
+        puts_("SD: "); puts_(sdvol_error(err));
+        puts_(" ("); print_u32((uint32_t)err); puts_(")\n");
+    }
+    return;
+usage:
+    puts_("sd init [sck mosi miso cs idle-cs1 idle-cs2] (255 skips idle-cs)\n"
+          "sd ls [path] | cat <path> | put/add <path> <line>\n"
+          "sd rm/mkdir <path> | rw [on|off] | off\n");
+}
+
 static void help(void)
 {
     puts_(
@@ -696,6 +788,10 @@ static void help(void)
         "  add <path> <line>   append one line to a file\n"
         "  rm <path>           delete a file\n"
         "  rw [on|off]         unlock writing (put/add/rm need this)\n"
+        "  sd init              mount SPI SD (18/23/19/2; idle CS 12/32)\n"
+        "  sd ls/cat/put/add/rm/mkdir  FAT files; 'sd' for usage\n"
+        "  sd rw [on|off]       separate SD write unlock\n"
+        "  sd off               unmount SD and lock writing\n"
         "  reboot               reset into the download bootloader\n"
         "  help                 this text\n");
 }
@@ -752,6 +848,8 @@ void ramtool_main(void)
             cmd_rm(p);
         } else if (word_is(&p, "rw")) {
             cmd_rw(p);
+        } else if (word_is(&p, "sd")) {
+            cmd_sd(p);
         } else if (word_is(&p, "reboot") || word_is(&p, "x")) {
             cmd_reboot(p);
         } else {
