@@ -9,14 +9,17 @@ static void level(unsigned pin, int high)
                                         : (high ? 0x14 : 0x18));
     *(volatile uint32_t *)reg = 1u << (pin & 31);
 }
+#if RAMTOOL_SD_PIN_ARGS
 static int valid(unsigned pin)
 {
-    /* Exclude UART, boot GPIO0, flash/PSRAM, and nonexistent pads. */
+    /* Exclude UART, boot GPIO0, flash/PSRAM, and nonexistent pads. Only the
+     * runtime override can supply a bad pin, so this is compiled out with it. */
     return pin == 2 || pin == 4 || pin == 5 ||
            (pin >= 12 && pin <= 15) || pin == 18 || pin == 19 ||
            (pin >= 21 && pin <= 23) || (pin >= 25 && pin <= 27) ||
            pin == 32 || pin == 33;
 }
+#endif
 static void output(unsigned pin, int high)
 {
     esp_rom_gpio_pad_select_gpio((uint8_t)pin);
@@ -27,12 +30,17 @@ static void output(unsigned pin, int high)
 }
 int sdport_setup(const uint8_t pins[6])
 {
+#if RAMTOOL_SD_PIN_ARGS
+    /* Reject unsupported pads and duplicate assignments. The built-in defaults
+     * are known good, so with the override compiled out there is nothing to
+     * check and this loop disappears. */
     for (unsigned i = 0; i < 6; i++) {
         if (i >= 4 && pins[i] == 255) continue;
         if (!valid(pins[i])) return -1;
         for (unsigned j = 0; j < i; j++)
             if (pins[i] == pins[j]) return -1;
     }
+#endif
     /* Deselect every slave BEFORE producing the first clock edge. */
     for (unsigned i = 3; i < 6; i++)
         if (pins[i] != 255) output(pins[i], 1);

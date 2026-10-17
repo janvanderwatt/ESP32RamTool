@@ -69,6 +69,12 @@ distinct. Supported pads are 2, 4, 5, 12–15, 18, 19, 21–23, 25–27, 32, 33.
 UART, boot GPIO0, flash/PSRAM, nonexistent and input-only pads are excluded.
 Strapping GPIOs must still have suitable reset-time wiring.
 
+The override parser is compiled in by default. Build with
+`.\build.ps1 -NoSdPinArgs` (equivalently `-DRAMTOOL_SD_PIN_ARGS=0`) to drop it
+and the pad-validation checks; `sd init` then always uses the fixed defaults and
+rejects arguments. This trims about 200 bytes. Either way, nothing touches the
+SD pins until `sd init` runs.
+
 ## Implementation and limits
 
 `sdgpio.c` implements mode-0 software SPI with a delay in each half cycle,

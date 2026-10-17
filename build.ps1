@@ -13,7 +13,9 @@
     entry-point symbol.
 
     ROM addresses are pinned in rom/esp32.ld; no ESP-IDF checkout or ROM ELF
-    extraction is needed. The toolchain is located in this order:
+    extraction is needed. The `sd init` pin override is compiled in by default;
+    pass -NoSdPinArgs to drop it and trim the payload. The toolchain is located
+    in this order:
 
       1. -ToolchainPath, if given
       2. $env:IDF_TOOLS_PATH
@@ -22,6 +24,10 @@
 .EXAMPLE
     .\build.ps1
     Uses $env:IDF_TOOLS_PATH, or falls back to whatever is on PATH.
+
+.EXAMPLE
+    .\build.ps1 -NoSdPinArgs
+    Also compiles out the `sd init` pin-override parser to save a little IRAM.
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +35,12 @@ param(
     [string]$Configuration = 'Release',
 
     # Directory holding xtensa-esp32-elf-gcc
-    [string]$ToolchainPath
+    [string]$ToolchainPath,
+
+    # Compile out the `sd init` pin-override parser and its pad-validation
+    # table. `sd init` then always uses the fixed 18/23/19/2/12/32 defaults and
+    # rejects arguments. Default is off (override present).
+    [switch]$NoSdPinArgs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -181,6 +192,10 @@ if ($Configuration -eq 'Debug') {
 } else {
     $common += @('-Os', '-g')
 }
+
+# RAMTOOL_SD_PIN_ARGS defaults to 1 (see sdspi.h). -NoSdPinArgs trims the
+# payload by compiling the pin-override parser and pad checks out.
+if ($NoSdPinArgs) { $common += '-DRAMTOOL_SD_PIN_ARGS=0' }
 
 # start.S goes through the C preprocessor too so the shared defines apply.
 $asmCommon = @(

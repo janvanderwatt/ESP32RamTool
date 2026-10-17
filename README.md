@@ -279,6 +279,11 @@ are unnecessary. `build.ps1` finds the toolchain in this order:
 .\build.ps1 -ToolchainPath C:\path\to\xtensa-esp-elf\bin
 ```
 
+`.\build.ps1 -NoSdPinArgs` compiles out the `sd init` pin-override parser and its
+pad checks, trimming about 200 bytes; `sd init` then always uses the fixed
+18/23/19/2/12/32 defaults and rejects arguments. The default build keeps the
+override.
+
 `-RomLdPath` is no longer needed or accepted. The checked-in table covers classic
 ESP32 revisions 0 through 3; see [ROM provenance and verification](rom/README.md).
 Recheck addresses only when maintaining that table or adding chip support.

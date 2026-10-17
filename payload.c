@@ -694,6 +694,7 @@ static void cmd_sd(const char *p)
     char path[128];
     if (word_is(&p, "init")) {
         uint8_t pins[6] = {18, 23, 19, 2, 12, 32};
+#if RAMTOOL_SD_PIN_ARGS
         if (*p) {
             for (unsigned i = 0; i < 6; i++) {
                 if (*p < '0' || *p > '9') goto usage;
@@ -708,6 +709,9 @@ static void cmd_sd(const char *p)
             }
             if (*p) goto usage;
         }
+#else
+        if (*p) goto usage; /* this build pins the defaults; no override */
+#endif
         err = sdvol_init(pins);
         if (!err) {
             puts_("SD mounted, writing locked. pins SCK/MOSI/MISO/CS/idle-CS: ");
@@ -764,9 +768,15 @@ static void cmd_sd(const char *p)
     }
     return;
 usage:
+#if RAMTOOL_SD_PIN_ARGS
     puts_("sd init [sck mosi miso cs idle-cs1 idle-cs2] (255 skips idle-cs)\n"
           "sd ls [path] | cat <path> | put/add <path> <line>\n"
           "sd rm/mkdir <path> | rw [on|off] | off\n");
+#else
+    puts_("sd init (fixed pins 18/23/19/2; idle CS 12/32)\n"
+          "sd ls [path] | cat <path> | put/add <path> <line>\n"
+          "sd rm/mkdir <path> | rw [on|off] | off\n");
+#endif
 }
 
 static void help(void)
@@ -788,7 +798,11 @@ static void help(void)
         "  add <path> <line>   append one line to a file\n"
         "  rm <path>           delete a file\n"
         "  rw [on|off]         unlock writing (put/add/rm need this)\n"
+#if RAMTOOL_SD_PIN_ARGS
+        "  sd init [pins]       mount SPI SD (18/23/19/2; idle CS 12/32)\n"
+#else
         "  sd init              mount SPI SD (18/23/19/2; idle CS 12/32)\n"
+#endif
         "  sd ls/cat/put/add/rm/mkdir  FAT files; 'sd' for usage\n"
         "  sd rw [on|off]       separate SD write unlock\n"
         "  sd off               unmount SD and lock writing\n"
