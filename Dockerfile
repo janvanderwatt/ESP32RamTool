@@ -36,14 +36,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # No esptool here on purpose: this stage only runs build.ps1, which needs the
-# toolchain and the ROM linker scripts and nothing else. esptool is a runtime
+# toolchain; ROM addresses are pinned in /src/rom/esp32.ld. esptool is a runtime
 # concern and is installed in the final stage.
 
-# IDF_PATH and IDF_TOOLS_PATH are already correct in this image (IDF_PATH points
-# at the checkout, IDF_TOOLS_PATH at the directory holding tools/). Do not
-# override them -- an earlier version of this file guessed at IDF_TOOLS_PATH and
-# broke toolchain discovery. build.ps1 reads them from the environment, which is
-# the whole point of testing it here.
+# IDF_TOOLS_PATH already points at the installed toolchain in this image.
+# build.ps1 uses it for compiler discovery; it does not read IDF_PATH or any
+# installed SDK linker scripts.
 ENV PATH="/opt/esp/idf/tools:${PATH}"
 
 WORKDIR /src
@@ -83,6 +81,7 @@ COPY run.py run.py
 
 # The notes travel with the image, so they are readable from it without a clone.
 COPY --from=build /src/docs        docs/
+COPY --from=build /src/rom         rom/
 COPY --from=build /src/README.md   README.md
 COPY --from=build /src/LICENSE     LICENSE
 COPY --from=build /src/littlefs/ORIGIN.md    littlefs/ORIGIN.md

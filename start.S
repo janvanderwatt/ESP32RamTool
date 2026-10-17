@@ -1,8 +1,8 @@
 /* RamTool entry point.
  *
- * How control reaches us: the host calls MEM_END with our entry address. The
- * ROM's MemDwnLdStopReqMsgProc stores that address into user_code_start
- * (0x3ffe0400) and main later does `callx8` on it. So we are *called*: there
+ * How control reaches us: the host uploads the esptool stub, then calls MEM_END
+ * with our entry address. The stub calls the payload; the ROM's own download
+ * handler only records the address and never jumps to it. So we are called: there
  * is a live return address and register window above us, and a `ret` from here
  * would drop us back into the ROM's flash-boot path. Everything below therefore
  * installs its own stack and never returns.
@@ -19,9 +19,9 @@
     .align 4
 
 L_cache_flush:
-    .word   0x40009a14        /* Cache_Flush_rom */
+    .word   ramtool_rom_cache_flush
 L_ets_isr_mask:
-    .word   0x400067fc        /* ets_isr_mask */
+    .word   ets_isr_mask
 L_uart_int_ena:
     .word   0x3FF4000C        /* UART0 INT_ENA */
 L_uart_int_clr:

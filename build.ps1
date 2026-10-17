@@ -3,7 +3,7 @@
     Build the RamTool RAM payload.
 
 .DESCRIPTION
-    Cross-compiles a freestanding Xtensa binary with an ESP-IDF toolchain.
+    Cross-compiles a freestanding binary with an Xtensa ESP32 toolchain.
     There is no idf.py involvement and no
     CMake project; this is a direct gcc invocation with a hand-written linker
     script, because the payload has to land at absolute addresses the host
@@ -12,16 +12,16 @@
     Produces build\iram.bin and build\dram.bin plus the ELF that holds the
     entry-point symbol.
 
-    Nothing here is tied to a particular machine. The toolchain and ESP-IDF's
-    ROM linker scripts are located in this order:
+    ROM addresses are pinned in rom/esp32.ld; no ESP-IDF checkout or ROM ELF
+    extraction is needed. The toolchain is located in this order:
 
-      1. -ToolchainPath and -RomLdPath, if given
-      2. $env:IDF_PATH for the ROM scripts, $env:IDF_TOOLS_PATH for the toolchain
+      1. -ToolchainPath, if given
+      2. $env:IDF_TOOLS_PATH
       3. xtensa-esp32-elf-gcc on PATH
 
 .EXAMPLE
     .\build.ps1
-    Uses $env:IDF_PATH, or falls back to whatever is on PATH.
+    Uses $env:IDF_TOOLS_PATH, or falls back to whatever is on PATH.
 #>
 [CmdletBinding()]
 param(
@@ -29,10 +29,7 @@ param(
     [string]$Configuration = 'Release',
 
     # Directory holding xtensa-esp32-elf-gcc
-    [string]$ToolchainPath,
-
-    # Directory holding esp32.rom.ld and friends
-    [string]$RomLdPath
+    [string]$ToolchainPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -124,7 +121,7 @@ if (-not $cc) {
     throw @'
 Cannot find the Xtensa toolchain.
 
-Install ESP-IDF and set IDF_PATH (and IDF_TOOLS_PATH), or put
+Install an Xtensa ESP32 toolchain and set IDF_TOOLS_PATH, or put
 xtensa-esp32-elf-gcc on PATH, or pass -ToolchainPath explicitly.
 
 The container image in this repository already has all of it:
@@ -146,28 +143,9 @@ foreach ($tool in @($objcopy, $size, $nm)) {
     }
 }
 
-# ---- locate ESP-IDF's ROM linker scripts --------------------------------
-
-if (-not $RomLdPath -and $env:IDF_PATH) {
-    # Forward slashes work on Windows too, which saves a branch on the separator.
-    $candidate = Join-Path $env:IDF_PATH 'components/esp_rom/esp32/ld'
-    if (Test-Path $candidate) {
-        $RomLdPath = $candidate
-    }
-}
-
-if (-not $RomLdPath) {
-    throw @'
-Cannot find ESP-IDF's ROM linker scripts (esp32.rom.ld).
-
-Set IDF_PATH to an ESP-IDF checkout, or pass -RomLdPath pointing at
-components/esp_rom/esp32/ld.
-'@
-}
-
-if (-not (Test-Path (Join-Path $RomLdPath 'esp32.rom.ld'))) {
-    throw "esp32.rom.ld not found under '$RomLdPath'"
-}
+# ROM bindings are versioned with the payload, independent of installed SDKs.
+$romLd = Join-Path $root 'rom/esp32.ld'
+if (-not (Test-Path $romLd)) { throw "pinned ROM table missing: $romLd" }
 
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 
@@ -287,9 +265,7 @@ $linkArgs = @(
     '-nostdlib'
     '-nostartfiles'
     ('-Wl,-T,' + $ourLd)
-    ('-Wl,-T,' + (Join-Path $RomLdPath 'esp32.rom.api.ld'))
-    ('-Wl,-T,' + (Join-Path $RomLdPath 'esp32.rom.ld'))
-    ('-Wl,-T,' + (Join-Path $RomLdPath 'esp32.rom.libgcc.ld'))
+    ('-Wl,-T,' + $romLd)
     '-Wl,--gc-sections'
     ('-Wl,-Map=' + $map)
     '-Wl,--no-warn-rwx-segments'

@@ -41,9 +41,10 @@ assembly section added by hand goes in `.dram_img`, not `.iram_img`.
 
 ### Name your entry point something the ROM does not already claim
 
-`esp32.rom.ld` contains `PROVIDE (_start = 0x40000704)`. If your entry is called
-`_start`, the linker resolves that name silently and you get the wrong address
-with no diagnostic. Use a distinct name — this project uses `ramtool_entry`.
+Older SDK-based builds imported `PROVIDE (_start = 0x40000704)` from
+`esp32.rom.ld`, which could silently bind a payload entry to the ROM. The current
+pinned table excludes `_start`; RamTool retains its distinct `ramtool_entry`
+name, and the generated manifest records the actual build entry address.
 
 ### `l32r` resolves backwards only
 

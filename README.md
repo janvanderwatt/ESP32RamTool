@@ -249,26 +249,34 @@ sdspi.c/.h      SD card protocol and FatFs block-device adapter
 sdvol.c/.h      FAT file commands and independent write lock
 fatfs/          vendored FatFs R0.16 (see ORIGIN.md)
 tests/          simulated SD protocol and FAT regression tests
-rom.h           ROM function and peripheral addresses
+rom.h           ROM function declarations and peripheral addresses
+rom/esp32.ld    pinned ROM ABI, independent of installed SDKs
 ramtool.ld      linker script: where code and data land
 tools/serial_bridge.py  reach a host serial port from a container
+tools/verify_rom_symbols.py  optional ROM address maintenance audit
 docs/           the notes linked above
 LICENSE         BSD-3-Clause
 ```
 
 ## Building on a clean machine
 
-The build needs an Xtensa toolchain and ESP-IDF's ROM linker scripts. Rather than
-hardcode anyone's install path, `build.ps1` finds them:
+The build needs an Xtensa ESP32 toolchain. ROM addresses are pinned in
+[`rom/esp32.ld`](rom/esp32.ld), so an ESP-IDF checkout and ROM ELF extraction
+are unnecessary. `build.ps1` finds the toolchain in this order:
 
-1. `-ToolchainPath` / `-RomLdPath` arguments, if given;
-2. `$env:IDF_PATH` for the ROM scripts, and the toolchain under `$env:IDF_TOOLS_PATH`;
+1. `-ToolchainPath`, if given;
+2. the toolchain under `$env:IDF_TOOLS_PATH`;
 3. `xtensa-esp32-elf-gcc` on `PATH`.
 
-```sh
-export IDF_PATH=/path/to/esp-idf
-./build.ps1
+```powershell
+.\build.ps1 -ToolchainPath C:\path\to\xtensa-esp-elf\bin
 ```
+
+`-RomLdPath` is no longer needed or accepted. The checked-in table covers classic
+ESP32 revisions 0 through 3; see [ROM provenance and verification](rom/README.md).
+Recheck addresses only when maintaining that table or adding chip support.
+The payload's entry/load addresses are still extracted from each build's ELF
+into `build/manifest.txt`.
 
 If esptool is not installed in the active interpreter, `run.py` falls back to an
 ESP-IDF checkout's own environment; otherwise `pip install esptool` is enough.
@@ -327,9 +335,9 @@ that is what the [Verified on hardware](#verified-on-hardware) section is for.
 
 Deliberate choices that look odd and are not:
 
-- **The entry point is `ramtool_entry`, not `_start`.** `esp32.rom.ld` does
-  `PROVIDE (_start = 0x40000704)`; colliding with that name silently yields the
-  wrong address.
+- **The entry point is `ramtool_entry`, not `_start`.** Older SDK-based builds
+  imported a ROM `_start` symbol at `0x40000704`. The pinned table deliberately
+  excludes that symbol; the distinct payload entry name is retained.
 - **Commands dispatch on whole words.** A first-character switch quietly mis-routes
   anything sharing a first letter.
 - **The console polls; it never uses `waiti`.**

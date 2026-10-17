@@ -1,14 +1,8 @@
 /* ROM entry points and peripheral addresses for the classic ESP32.
  *
- * Every address here was read out of the ROM ELFs that ship with ESP-IDF
- * (esp32_rev0_rom.elf and esp32_rev300_rom.elf, under
- * $IDF_TOOLS_PATH/esp-rom-elfs/) and cross-checked against
- * components/esp_rom/esp32/ld/esp32.rom.ld. Both revisions agree on all of
- * them, so one table serves the whole family.
- *
- * The functions declared with the esp_rom_ prefix are resolved by the linker
- * from esp32.rom.api.ld. The few ROM symbols with no PROVIDE anywhere are
- * declared here with their literal addresses instead; see docs/rom-symbols.md.
+ * Linker bindings are pinned in rom/esp32.ld and verified against the rev0
+ * and rev300 ROM ELFs. No installed SDK or runtime discovery is required.
+ * See rom/README.md for provenance and optional maintenance verification.
  */
 
 #ifndef RAMTOOL_ROM_H
@@ -16,7 +10,7 @@
 
 #include <stdint.h>
 
-/* ---- resolved by the linker from esp32.rom.api.ld ---- */
+/* ---- resolved by the linker from rom/esp32.ld ---- */
 
 extern void esp_rom_printf(const char *fmt, ...);
 extern void esp_rom_delay_us(uint32_t us);
@@ -24,19 +18,20 @@ extern void esp_rom_uart_tx_one_char(uint8_t c);
 extern void esp_rom_uart_flush_tx(uint8_t uart_no);
 extern void esp_rom_install_uart_printf(void);
 
-/* Non-blocking: returns non-zero and stores the byte in *c if one was waiting,
- * zero if the FIFO was empty. That is what lets the console poll without
- * spinning on a blocking read. */
+/* Non-blocking ROM convention: 0 on success (byte stored in *c), non-zero
+ * when no byte is available. The console polls the UART registers directly. */
 extern uint8_t esp_rom_uart_rx_one_char(uint8_t *c);
 extern void esp_rom_gpio_pad_select_gpio(uint8_t gpio_num);
 extern void esp_rom_gpio_pad_set_drv(uint8_t gpio_num, uint8_t drv);
+extern void esp_rom_gpio_connect_out_signal(uint32_t gpio, uint32_t signal,
+                                           int invert, int invert_enable);
 extern void esp_rom_software_reset_system(void);
 
 /* SPI flash access, used to read a littlefs volume off the chip.
  *
- * esp_rom_spiflash_attach is resolved from esp32.rom.api.ld. esp_rom_spiflash_read
- * is the ROM's SPIRead and is NOT exported by any ESP-IDF linker script, so
- * ramtool.ld gives it its literal address.
+ * esp_rom_spiflash_attach is the ROM's spi_flash_attach; the reader is SPIRead.
+ * Both are bound directly in rom/esp32.ld. Older SDK linker scripts omitted
+ * the esp_rom_spiflash_read alias, which originally required a local override.
  *
  * Mind the near-identical esp_rom_spiflash_read_user_cmd: that is a raw
  * single-command reader taking (status *, cmd), not a block read. Handing it
@@ -44,7 +39,7 @@ extern void esp_rom_software_reset_system(void);
 extern void esp_rom_spiflash_attach(uint32_t ishspi, int legacy);
 extern int esp_rom_spiflash_read(uint32_t src_addr, uint32_t *dest, int32_t len);
 
-/* Writing. Same situation as SPIRead: the ROM has these, nothing PROVIDEs them.
+/* Writing. Like SPIRead, these are bound directly in rom/esp32.ld.
  *
  * esp_rom_spiflash_erase_area takes a start address and a length, NOT a block
  * or sector number, so the caller has to translate from whatever unit littlefs
@@ -59,7 +54,7 @@ extern int esp_rom_spiflash_erase_area(uint32_t start_addr, uint32_t area_len);
  * esp_rom_uart_rx_one_char to the same 0x400092d0. */
 #define ROM_UART_RX_ONE_CHAR_NAME uart_rx_one_char
 
-/* Interrupt masking, added by ramtool.ld. */
+/* Interrupt masking, pinned in rom/esp32.ld. */
 extern void ets_isr_mask(uint32_t level);   /* 0x400067fc */
 extern void ets_isr_unmask(uint32_t level); /* 0x40006808 */
 
