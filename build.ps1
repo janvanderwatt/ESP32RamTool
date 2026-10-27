@@ -336,6 +336,16 @@ Copy-Item $dramBin (Join-Path $dist 'dram.bin') -Force
 Copy-Item $manifest (Join-Path $dist 'manifest.txt') -Force
 Copy-Item (Join-Path $root 'run.py') (Join-Path $dist 'run.py') -Force
 
+# The distribution ships instructions written for agents and scripts. The text
+# lives in the repository (packaging/AGENTS.md) so it is reviewable in diffs,
+# and is copied verbatim so what was reviewed is what ships. Missing it is a
+# build failure, not a distribution without documentation.
+$distAgents = Join-Path $root 'packaging/AGENTS.md'
+if (-not (Test-Path $distAgents)) {
+    throw "distribution instructions missing: $distAgents"
+}
+Copy-Item $distAgents (Join-Path $dist 'AGENTS.md') -Force
+
 # Minimal usage note for Windows users
 $usage = @"
 RamTool — Windows distribution
@@ -346,6 +356,9 @@ Files in this folder:
   dram.bin     - DRAM payload (loads at 0x3FFB0000)
   manifest.txt - Load addresses + entry point
   run.py       - Host loader script
+  AGENTS.md    - Instructions for agents and scripts
+
+See AGENTS.md for the full command reference, scripting notes, and gotchas.
 
 Requirements:
   - Python 3.8+

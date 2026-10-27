@@ -47,50 +47,88 @@ that looks like `/dev/ttyUSB0`; check with `esptool.py --list-ports`.
 `run.py` stays attached: type commands at the `>` prompt, or Ctrl-C to detach and
 leave the payload running. `--seconds N` bounds the session instead.
 
-See [Building on a clean machine](#building-on-a-clean-machine) if you would rather
-not install an ESP-IDF toolchain on the host.
+No toolchain on this machine? [Build in a container](#in-a-container), or take the
+standalone `dist/` folder the build produces — see
+[scripting and the distribution](#scripting-and-the-distribution).
 
 ## Commands
 
-```
-info                 mac, silicon revision
-g <pin>              read a gpio
-g <pin> <0|1>        set a gpio
-blink <pin> [n] [ms] blink a pin
-r <addr>             read a 32-bit register
-w <addr> <val>       write a 32-bit register
-delay <ms>           delay
+`help`, or `?`, prints the same list on the chip, and the payload is the authority
+on what it accepts.
 
-part                 show the partition table
-ls [path]            list a littlefs directory
-cat <path>           print a file
-put <path> <line>    replace a file with one line
-add <path> <line>    append one line to a file
-rm <path>            delete a file
-rw [on|off]          unlock writing; put/add/rm need this
+| Command | Aliases | What it does |
+|---|---|---|
+| `info` | | MAC address and silicon revision; also printed at startup |
+| `g <pin>` | `gpio`, `s` | read a GPIO (pins 0–31) |
+| `g <pin> <0\|1>` | `gpio`, `s` | drive a GPIO high or low; any non-zero value is high |
+| `blink <pin> [n] [ms]` | `b` | blink a pin; defaults are 10 blinks at 100 ms |
+| `r <addr>` | `read` | read a 32-bit register |
+| `w <addr> <val>` | `write` | write a 32-bit register |
+| `delay <ms>` | `d` | sleep |
+| `part` | `parts` | show the partition table |
+| `ls [path]` | `dir` | list a littlefs directory; `ls @<offset>` for an explicit flash base |
+| `cat <path>` | `type` | print a file |
+| `put <path> <line>` | | replace a file with one line |
+| `add <path> <line>` | `append` | append one line |
+| `rm <path>` | `del` | delete a file |
+| `rw` | | report the unlocked write range |
+| `rw on` | | unlock internal-flash writing; `rw on @<offset> <size>` for an explicit region |
+| `rw off` | | lock writing |
+| `sd init [pins]` | | mount the SPI SD card; `sd` alone prints usage |
+| `sd ls [path]` | | list a FAT directory |
+| `sd cat <path>` | | print an SD file |
+| `sd put <path> <line>` | | replace an SD file with one line |
+| `sd add <path> <line>` | | append one line to an SD file |
+| `sd mkdir <path>` | | create one SD directory level |
+| `sd rm <path>` | | remove an SD file or empty directory |
+| `sd rw [on\|off]` | | the SD write lock, separate from internal flash |
+| `sd off` | | unmount the card and lock writing |
+| `reset` | | unmount SD and reset; the chip then boots the flashed application |
+| `reboot` | `x` | reset into the download bootloader |
+| `help` | `?` | the command list |
 
-sd init              mount SPI SD (FlotSense pins by default)
-sd ls [path]         list a FAT directory
-sd cat <path>        print an SD file
-sd put <path> <line> replace an SD file with one line
-sd add <path> <line> append one line to an SD file
-sd mkdir <path>      create an SD directory
-sd rm <path>         remove an SD file or empty directory
-sd rw [on|off]       separately unlock SD writing
-sd off              unmount SD and lock writing
+Argument rules that apply everywhere:
 
-reboot               reset into the download bootloader
-help                 this list
-```
+- Numbers are decimal, or hex with a `0x` prefix. Parsing is lenient: an argument
+  with no digits is 0, so `g zzz` reads GPIO 0. `r` and `w` refuse 0 and any
+  address that is not 4-byte aligned.
+- Paths cannot contain spaces — the console splits on whitespace and there is no
+  quoting. The whole command line is limited to 199 bytes.
+- littlefs paths are relative to the volume root and must not begin with `/`:
+  `cat config.csv`, not `cat /config.csv`. `ls` accepts `/` for the root. Names
+  are limited to 63 bytes.
+- SD paths may be absolute (`/LOGS/TODAY.TXT`) and are limited to 127 bytes.
+- `blink` and `delay` hold the console for their whole duration.
+- Errors print as `<command>: <reason> (<number>)`, and SD errors as
+  `SD: <reason> (<number>)`.
 
-Paths cannot contain spaces — the console splits on whitespace and there is no
-quoting.
+## Writes and safety
+
+**Loading the payload, running it, and reading with it write nothing to flash.**
+`part`, `ls`, and `cat` are free. Writing files is the only thing that changes
+content, and it is gated.
+
+littlefs (`put`, `add`, `rm`) needs `rw on`, which prints the exact byte range it
+unlocked and does not survive a reboot. Every program and erase is checked against
+that range, because littlefs takes its idea of its own size from the superblock
+without validating it — see [safe-flash-writes.md](docs/safe-flash-writes.md).
+
+The SD card has its own lock. `sd init` mounts with writing locked, and `sd rw on`
+unlocks it independently of internal flash; `sd off`, another `sd init`, an
+unmount, a reboot, and any transport error all lock it again. Mounting never
+formats.
+
+Writes are one line at a time and the command adds the trailing newline; there is
+no multi-line or binary write path. `put` truncates the old file before writing
+its replacement, and FAT writes are not atomic either, so an interrupted write can
+leave a partial file. New SD files get the fixed timestamp 2026-01-01, because
+there is no RTC.
 
 ## SPI SD cards
 
 Run `sd init`, then `sd rw on` to enable SD file writes. The defaults match
-FlotSense: SCLK 18, MOSI 23, MISO 19, SD CS 2; screen CS 12 and PT100 CS 32
-are held high on the shared bus. For example:
+FlotSense: SCLK 18, MOSI 23, MISO 19, SD CS 2; screen CS 12 and PT100 CS 32 are
+held high on the shared bus.
 
 ```text
 sd init
@@ -102,21 +140,37 @@ sd off
 ```
 
 Supports existing FAT12/16/32 volumes, long UTF-8 filenames, and SDSC/SDHC/SDXC
-over software SPI. exFAT is unsupported. Mounting never formats the card;
-SD access starts only at `sd init`. See [SD card support](docs/sd-card.md)
-for custom pins, limitations, research references, and hardware checks.
-The SD feature passes simulated-card tests and has been verified on physical
-hardware; see [Verified on hardware](#verified-on-hardware).
+over software SPI. exFAT is unsupported. Mounting never formats the card; SD
+access starts only at `sd init`. Custom wiring takes six decimal pins, in the
+order SCLK/MOSI/MISO/SD-CS/idle-CS1/idle-CS2, with `255` for an unused chip
+select: `sd init 18 23 19 5 255 255`. See [SD card support](docs/sd-card.md) for
+custom pins, limitations, research references, and hardware checks. The SD
+feature passes simulated-card tests and has been verified on physical hardware;
+see [Verified on hardware](#verified-on-hardware).
 
-## What it writes, and when
+## Scripting and the distribution
 
-**Loading and running write nothing to flash.** Neither does reading.
+`run.py` is an interactive console, not a command runner, so the simplest
+automation is a bounded session:
 
-Writing files does, and only after you say `rw on`, which prints the exact byte
-range it has unlocked and does not survive a reboot. Every program and erase is
-additionally checked against that range, because littlefs takes its idea of its
-own size from the superblock without validating it — see
-[safe-flash-writes.md](docs/safe-flash-writes.md).
+```sh
+printf 'info\npart\nls\n' | python run.py --port COM7 --seconds 5
+```
+
+Send one command at a time and wait for the `> ` prompt. The console has no flow
+control and a 128-byte FIFO, and a command doing flash or SD I/O is not draining
+it, so a blasted batch loses characters silently — which looks like a flaky link
+rather than an overrun. Attaching with a serial client of your own needs DTR and
+RTS deasserted before the port opens, or an auto-reset board resets and the
+payload is gone. Both traps are written up in
+[serial-from-container.md](docs/serial-from-container.md).
+
+Every build also produces a standalone `dist/` folder: the two payload images,
+`manifest.txt`, `run.py`, and an `AGENTS.md` written for agents and scripts. That
+file carries the complete command reference, a ready-made load-once-then-own-the-
+port client, and the traps. It is copied from `packaging/AGENTS.md` at build time,
+so it stays in step with the payload; copy the folder anywhere and run it, with no
+toolchain at all.
 
 ## How it works
 
@@ -240,31 +294,6 @@ looks like a flaky link rather than an overrun.
 Three spellings, three different errors. Bridge it over TCP instead, and mind what
 the reset lines cost you.
 
-## Repository layout
-
-```
-build.ps1       cross-compile the payload
-run.py          push it into RAM and start it
-Dockerfile      reproducible build on a clean machine
-docker-compose.yml  wrapper for building, and for driving hardware
-start.S         entry point: cache flush, stack, bss, UART handover
-payload.c       the command interpreter (the part you will edit)
-lfsvol.c/.h     littlefs over SPI flash: the file and partition commands
-littlefs/       vendored littlefs, unmodified (see ORIGIN.md)
-sdgpio.c        software SPI and shared-bus GPIO setup
-sdspi.c/.h      SD card protocol and FatFs block-device adapter
-sdvol.c/.h      FAT file commands and independent write lock
-fatfs/          vendored FatFs R0.16 (see ORIGIN.md)
-tests/          simulated SD protocol and FAT regression tests
-rom.h           ROM function declarations and peripheral addresses
-rom/esp32.ld    pinned ROM ABI, independent of installed SDKs
-ramtool.ld      linker script: where code and data land
-tools/serial_bridge.py  reach a host serial port from a container
-tools/verify_rom_symbols.py  optional ROM address maintenance audit
-docs/           the notes linked above
-LICENSE         BSD-3-Clause
-```
-
 ## Building on a clean machine
 
 The build needs an Xtensa ESP32 toolchain. ROM addresses are pinned in
@@ -288,7 +317,9 @@ override.
 ESP32 revisions 0 through 3; see [ROM provenance and verification](rom/README.md).
 Recheck addresses only when maintaining that table or adding chip support.
 The payload's entry/load addresses are still extracted from each build's ELF
-into `build/manifest.txt`.
+into `build/manifest.txt`. The same build also writes `dist/`, the standalone
+distribution described under
+[scripting and the distribution](#scripting-and-the-distribution).
 
 If esptool is not installed in the active interpreter, `run.py` falls back to an
 ESP-IDF checkout's own environment; otherwise `pip install esptool` is enough.
@@ -305,8 +336,9 @@ docker run --rm -v "$PWD/build:/src/build" ramtool ls -l /src/build
 ```
 
 It pins ESP-IDF v5.5.4 (xtensa-esp-elf 14.2.0) and installs PowerShell so the
-build script runs unmodified. `docker-compose.yml` wraps the two things people
-actually want:
+build script runs unmodified. The runtime stage carries the build's `dist/` folder
+and the notes, so a container can hand out the standalone distribution as well as
+drive hardware. `docker-compose.yml` wraps the two things people actually want:
 
 ```sh
 docker compose build                    # build the payload in the container
@@ -342,6 +374,33 @@ option. Both, plus the WSL `usbipd-win` alternative, are in
 The container builds and verifies the artifacts; it does **not** pretend to test
 against hardware. Runtime behaviour is the part only a real chip can confirm, and
 that is what the [Verified on hardware](#verified-on-hardware) section is for.
+
+## Repository layout
+
+```
+build.ps1       cross-compile the payload; also writes dist/
+run.py          push it into RAM and start it
+Dockerfile      reproducible build on a clean machine
+docker-compose.yml  wrapper for building, and for driving hardware
+packaging/AGENTS.md  instructions for agents, copied to dist/AGENTS.md
+start.S         entry point: cache flush, stack, bss, UART handover
+payload.c       the command interpreter (the part you will edit)
+lfsvol.c/.h     littlefs over SPI flash: the file and partition commands
+littlefs/       vendored littlefs, unmodified (see ORIGIN.md)
+sdgpio.c        software SPI and shared-bus GPIO setup
+sdspi.c/.h      SD card protocol and FatFs block-device adapter
+sdvol.c/.h      FAT file commands and independent write lock
+fatfs/          vendored FatFs R0.16 (see ORIGIN.md)
+tests/          simulated SD protocol and FAT regression tests
+rom.h           ROM function declarations and peripheral addresses
+rom/esp32.ld    pinned ROM ABI, independent of installed SDKs
+ramtool.ld      linker script: where code and data land
+tools/serial_bridge.py  reach a host serial port from a container
+tools/verify_rom_symbols.py  optional ROM address maintenance audit
+docs/           the notes linked above
+dist/           the standalone distribution, produced by build.ps1 (not committed)
+LICENSE         BSD-3-Clause
+```
 
 ## Notes on style
 

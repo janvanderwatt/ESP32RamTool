@@ -21,3 +21,20 @@
 - When changing packaging or the standalone distribution, also check the
   generated `dist/` files and confirm `dist/run.py` can locate its payload.
 - Do not commit generated `build/` or `dist/` outputs.
+
+## Keeping the shipped instructions in sync
+
+The distribution ships an `AGENTS.md` that lists every command, so it goes stale
+the moment the command surface moves. When a command or user-visible behaviour
+is added, changed, or removed, update all of these in the same change:
+
+- `packaging/AGENTS.md`, which `build.ps1` copies verbatim to `dist/AGENTS.md`;
+- the `help()` text in `payload.c`, which is what the payload itself prints;
+- the Commands section of `README.md`.
+
+Then rebuild and read the shipped copy back, for example:
+
+```sh
+docker compose build
+docker run --rm ramtool cat dist/AGENTS.md
+```
