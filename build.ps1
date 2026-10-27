@@ -326,3 +326,55 @@ $dram = (Get-Item $dramBin).Length
 Write-Host ''
 Write-Host ("iram.bin {0} bytes at 0x40080000" -f $iram) -ForegroundColor Green
 Write-Host ("dram.bin {0} bytes at 0x3FFB0000" -f $dram) -ForegroundColor Green
+
+# ---- create dist folder (minimal runtime) -----------------------------------
+$dist = Join-Path $root 'dist'
+New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+Copy-Item $iramBin (Join-Path $dist 'iram.bin') -Force
+Copy-Item $dramBin (Join-Path $dist 'dram.bin') -Force
+Copy-Item $manifest (Join-Path $dist 'manifest.txt') -Force
+Copy-Item (Join-Path $root 'run.py') (Join-Path $dist 'run.py') -Force
+
+# The distribution ships instructions written for agents and scripts. The text
+# lives in the repository (packaging/AGENTS.md) so it is reviewable in diffs,
+# and is copied verbatim so what was reviewed is what ships. Missing it is a
+# build failure, not a distribution without documentation.
+$distAgents = Join-Path $root 'packaging/AGENTS.md'
+if (-not (Test-Path $distAgents)) {
+    throw "distribution instructions missing: $distAgents"
+}
+Copy-Item $distAgents (Join-Path $dist 'AGENTS.md') -Force
+
+# Minimal usage note for Windows users
+$usage = @"
+RamTool — Windows distribution
+==============================
+
+Files in this folder:
+  iram.bin     - IRAM payload (loads at 0x40080000)
+  dram.bin     - DRAM payload (loads at 0x3FFB0000)
+  manifest.txt - Load addresses + entry point
+  run.py       - Host loader script
+  AGENTS.md    - Instructions for agents and scripts
+
+See AGENTS.md for the full command reference, scripting notes, and gotchas.
+
+Requirements:
+  - Python 3.8+
+  - pip install esptool pyserial
+
+Usage:
+  python run.py --port COM3
+
+  Options:
+    --seconds N   Stay attached for N seconds, then exit
+    --boot        Enter download mode and stay there
+
+The payload runs entirely from RAM. Nothing is written to flash.
+"@
+Set-Content -Path (Join-Path $dist 'README.txt') -Value $usage -Encoding utf8
+
+Write-Host ''
+Write-Host "dist/ folder created at $dist" -ForegroundColor Cyan
+Write-Host "Copy the entire dist/ folder to any Windows PC to run RamTool." -ForegroundColor Cyan

@@ -398,6 +398,22 @@ static void cmd_delay(const char *p)
     puts_(" ms\n");
 }
 
+static void cmd_reset(const char *p)
+{
+    (void)p;
+    if (sdvol_mounted()) {
+        puts_("unmounting SD...\n");
+        sdvol_off();
+    }
+
+    puts_("resetting...\n");
+    esp_rom_uart_flush_tx(0);
+    esp_rom_delay_us(20000);
+
+    /* Plain reset: the chip will boot from flash on next start. */
+    esp_rom_software_reset_system();
+}
+
 static void cmd_reboot(const char *p)
 {
     (void)p;
@@ -806,6 +822,7 @@ static void help(void)
         "  sd ls/cat/put/add/rm/mkdir  FAT files; 'sd' for usage\n"
         "  sd rw [on|off]       separate SD write unlock\n"
         "  sd off               unmount SD and lock writing\n"
+        "  reset                unmount SD and reset the chip\n"
         "  reboot               reset into the download bootloader\n"
         "  help                 this text\n");
 }
@@ -864,6 +881,8 @@ void ramtool_main(void)
             cmd_rw(p);
         } else if (word_is(&p, "sd")) {
             cmd_sd(p);
+        } else if (word_is(&p, "reset")) {
+            cmd_reset(p);
         } else if (word_is(&p, "reboot") || word_is(&p, "x")) {
             cmd_reboot(p);
         } else {

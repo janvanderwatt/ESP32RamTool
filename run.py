@@ -53,6 +53,10 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD = os.path.join(HERE, "build")
+if not os.path.isdir(BUILD) and all(
+        os.path.isfile(os.path.join(HERE, name))
+        for name in ("iram.bin", "dram.bin", "manifest.txt")):
+    BUILD = HERE
 
 # The ROM's MEM_DATA block granularity (esptool's ESP32ROM.ESP_RAM_BLOCK).
 ROM_BLOCK = 0x1800

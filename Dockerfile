@@ -52,11 +52,15 @@ RUN pwsh -NoProfile -File ./build.ps1
 
 # Fail loudly if the artifacts are not where the host script expects them.
 # manifest.txt matters as much as the binaries: without it run.py has no way to
-# know the load addresses unless it can also parse the ELF.
+# know the load addresses unless it can also parse the ELF. The dist/ files are
+# asserted for the same reason: a distribution that silently lost its
+# instructions should not build.
 RUN test -f build/iram.bin && test -f build/dram.bin && test -f build/ramtool.elf \
  && test -f build/manifest.txt \
+ && test -f dist/AGENTS.md && test -f dist/README.txt \
  && cat build/manifest.txt \
- && ls -l build/iram.bin build/dram.bin build/manifest.txt
+ && ls -l build/iram.bin build/dram.bin build/manifest.txt \
+ && ls -l dist
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +81,7 @@ COPY --from=build /src/build/iram.bin   build/iram.bin
 COPY --from=build /src/build/dram.bin   build/dram.bin
 COPY --from=build /src/build/manifest.txt build/manifest.txt
 COPY --from=build /src/build/ramtool.elf build/ramtool.elf
+COPY --from=build /src/dist              dist/
 COPY run.py run.py
 
 # The notes travel with the image, so they are readable from it without a clone.

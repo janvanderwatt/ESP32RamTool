@@ -4,6 +4,7 @@
 # Build products are produced *inside* the image; copying the host's in would
 # mean a stale binary could masquerade as a fresh one.
 build/
+dist/
 
 .git/
 .gitattributes
