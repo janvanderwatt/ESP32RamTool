@@ -77,6 +77,7 @@ COPY --from=build /src/build/iram.bin   build/iram.bin
 COPY --from=build /src/build/dram.bin   build/dram.bin
 COPY --from=build /src/build/manifest.txt build/manifest.txt
 COPY --from=build /src/build/ramtool.elf build/ramtool.elf
+COPY --from=build /src/dist              dist/
 COPY run.py run.py
 
 # The notes travel with the image, so they are readable from it without a clone.
