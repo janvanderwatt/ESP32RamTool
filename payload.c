@@ -503,7 +503,7 @@ static void cmd_ls(const char *p)
 
     n = lfsvol_list(base, p, ls_visit, 0);
     if (n < 0) {
-        puts_("ls: ");
+        puts_("lfs ls: ");
         puts_(lfsvol_strerror(n));
         puts_(" (");
         print_u32((uint32_t)(-n));
@@ -565,7 +565,7 @@ static void report(const char *what, int err)
     puts_(")\n");
 }
 
-/* rw [on|off|@<offset> <size>]
+/* lfs rw [on|off|@<offset> <size>]
  *
  * Writing is gated because it is the only thing here that can destroy what is
  * on the chip. The lock lives in lfsvol's block device rather than here, so a
@@ -600,7 +600,7 @@ static void cmd_rw(const char *p)
     }
 
     if (!word_is(&p, "on")) {
-        puts_("usage: rw [on|off|@<offset> <size>]\n");
+        puts_("usage: lfs rw [on|off|@<offset> <size>]\n");
         return;
     }
 
@@ -612,14 +612,14 @@ static void cmd_rw(const char *p)
         skip_space(&p);
         size = parse_u32(&p);
         if (!base || !size) {
-            puts_("rw on @<offset> <size> needs both\n");
+            puts_("lfs rw on @<offset> <size> needs both\n");
             return;
         }
     }
 
     err = lfsvol_write_enable(base, size);
     if (err) {
-        report("rw on", err);
+        report("lfs rw on", err);
         return;
     }
 
@@ -631,7 +631,7 @@ static void cmd_rw(const char *p)
     puts_(". this does not survive a reboot.\n");
 }
 
-/* cat <path> -- emit file content a chunk at a time. Reading needs no unlock. */
+/* lfs cat <path> -- emit file content a chunk at a time. Reading needs no unlock. */
 static void cat_emit(void *ctx, const char *buf, uint32_t len)
 {
     uint32_t i;
@@ -648,35 +648,35 @@ static void cmd_cat(const char *p)
     int err;
 
     if (!take_path(&p, path, (int)sizeof(path))) {
-        puts_("usage: cat <path>\n");
+        puts_("usage: lfs cat <path>\n");
         return;
     }
 
     err = lfsvol_cat(0, path, cat_emit, 0);
     if (err < 0) {
-        report("cat", err);
+        report("lfs cat", err);
     }
 }
 
-/* put <path> <line>  replace the file, creating it if absent
- * add <path> <line>  append a line, creating the file if absent */
+/* lfs put <path> <line>  replace the file, creating it if absent
+ * lfs add <path> <line>  append a line, creating the file if absent */
 static void cmd_write_line(const char *p, int append)
 {
     char path[PATH_MAX];
     int err;
 
     if (!take_path(&p, path, (int)sizeof(path))) {
-        puts_(append ? "usage: add <path> <line>\n" : "usage: put <path> <line>\n");
+        puts_(append ? "usage: lfs add <path> <line>\n" : "usage: lfs put <path> <line>\n");
         return;
     }
     if (*p == '\0') {
-        puts_(append ? "add needs some text\n" : "put needs some text\n");
+        puts_(append ? "lfs add needs some text\n" : "lfs put needs some text\n");
         return;
     }
 
     err = append ? lfsvol_add(path, p) : lfsvol_put(path, p);
     if (err) {
-        report(append ? "add" : "put", err);
+        report(append ? "lfs add" : "lfs put", err);
         return;
     }
     puts_(append ? "appended to " : "wrote ");
@@ -690,13 +690,13 @@ static void cmd_rm(const char *p)
     int err;
 
     if (!take_path(&p, path, (int)sizeof(path))) {
-        puts_("usage: rm <path>\n");
+        puts_("usage: lfs rm <path>\n");
         return;
     }
 
     err = lfsvol_rm(path);
     if (err) {
-        report("rm", err);
+        report("lfs rm", err);
         return;
     }
     puts_("removed ");
@@ -795,6 +795,63 @@ usage:
 #endif
 }
 
+/* lfs format -- rewrite the superblock of the unlocked region. */
+static void cmd_lfs_format(const char *p)
+{
+    uint32_t base = 0;
+    uint32_t size = 0;
+    uint32_t bsize = 0;
+    int err;
+
+    skip_space(&p);
+    if (*p != '\0') {
+        puts_("usage: lfs format (unlock with 'lfs rw on' first)\n");
+        return;
+    }
+
+    err = lfsvol_format(&base, &size, &bsize);
+    if (err) {
+        report("lfs format", err);
+        return;
+    }
+
+    puts_("formatted 0x");
+    print_hex32(base, 8);
+    puts_(" + 0x");
+    print_hex32(size, 8);
+    puts_(" (");
+    print_u32(size / bsize);
+    puts_(" blocks of ");
+    print_u32(bsize);
+    puts_("). writing remains unlocked.\n");
+}
+
+/* Every littlefs command lives under 'lfs', mirroring 'sd'. The old bare
+ * spellings were removed rather than kept as aliases: one spelling per
+ * operation is easier to document and to script against. */
+static void cmd_lfs(const char *p)
+{
+    if (word_is(&p, "ls")) {
+        cmd_ls(p);
+    } else if (word_is(&p, "cat")) {
+        cmd_cat(p);
+    } else if (word_is(&p, "put")) {
+        cmd_write_line(p, 0);
+    } else if (word_is(&p, "add")) {
+        cmd_write_line(p, 1);
+    } else if (word_is(&p, "rm")) {
+        cmd_rm(p);
+    } else if (word_is(&p, "rw")) {
+        cmd_rw(p);
+    } else if (word_is(&p, "format")) {
+        cmd_lfs_format(p);
+    } else {
+        puts_("lfs ls [path] | lfs ls @<offset> [path] | lfs cat <path>\n"
+              "lfs put/add <path> <line> | lfs rm <path>\n"
+              "lfs rw [on|off|@<offset> <size>] | lfs format (after 'lfs rw on')\n");
+    }
+}
+
 static void help(void)
 {
     puts_(
@@ -806,14 +863,15 @@ static void help(void)
         "  r <addr>             read a 32-bit register\n"
         "  w <addr> <val>       write a 32-bit register\n"
         "  delay <ms>           delay\n"
-        "  ls [path]            list a littlefs directory\n"
-        "  ls @<offset>         same, at an explicit flash offset\n"
-        "  part                show the partition table\n"
-        "  cat <path>          print a file\n"
-        "  put <path> <line>   replace a file with one line\n"
-        "  add <path> <line>   append one line to a file\n"
-        "  rm <path>           delete a file\n"
-        "  rw [on|off]         unlock writing (put/add/rm need this)\n"
+        "  part                 show the partition table\n"
+        "  lfs ls [path]        list a littlefs directory\n"
+        "  lfs ls @<offset>     same, at an explicit flash offset\n"
+        "  lfs cat <path>       print a file\n"
+        "  lfs put <path> <line> replace a file with one line\n"
+        "  lfs add <path> <line> append one line to a file\n"
+        "  lfs rm <path>        delete a file\n"
+        "  lfs rw [on|off]      unlock writing (put/add/rm/format need this)\n"
+        "  lfs format           format the unlocked littlefs volume\n"
 #if RAMTOOL_SD_PIN_ARGS
         "  sd init [pins]       mount SPI SD (18/23/19/2; idle CS 12/32)\n"
 #else
@@ -865,20 +923,10 @@ void ramtool_main(void)
             cmd_write(p);
         } else if (word_is(&p, "d") || word_is(&p, "delay")) {
             cmd_delay(p);
-        } else if (word_is(&p, "ls") || word_is(&p, "dir")) {
-            cmd_ls(p);
         } else if (word_is(&p, "part") || word_is(&p, "parts")) {
             cmd_part();
-        } else if (word_is(&p, "cat") || word_is(&p, "type")) {
-            cmd_cat(p);
-        } else if (word_is(&p, "put")) {
-            cmd_write_line(p, 0);
-        } else if (word_is(&p, "add") || word_is(&p, "append")) {
-            cmd_write_line(p, 1);
-        } else if (word_is(&p, "rm") || word_is(&p, "del")) {
-            cmd_rm(p);
-        } else if (word_is(&p, "rw")) {
-            cmd_rw(p);
+        } else if (word_is(&p, "lfs")) {
+            cmd_lfs(p);
         } else if (word_is(&p, "sd")) {
             cmd_sd(p);
         } else if (word_is(&p, "reset")) {

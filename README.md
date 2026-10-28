@@ -10,7 +10,7 @@ partitions:
   nvs  @0x00009000  0x00005000  data sub 0x02
   app0  @0x00010000  0x00330000  app  sub 0x10
   spiffs  @0x00670000  0x00180000  data sub 0x82
-> ls
+> lfs ls
   [f] config.csv           69
   [f] pins.csv             153
 ```
@@ -66,14 +66,15 @@ on what it accepts.
 | `w <addr> <val>` | `write` | write a 32-bit register |
 | `delay <ms>` | `d` | sleep |
 | `part` | `parts` | show the partition table |
-| `ls [path]` | `dir` | list a littlefs directory; `ls @<offset>` for an explicit flash base |
-| `cat <path>` | `type` | print a file |
-| `put <path> <line>` | | replace a file with one line |
-| `add <path> <line>` | `append` | append one line |
-| `rm <path>` | `del` | delete a file |
-| `rw` | | report the unlocked write range |
-| `rw on` | | unlock internal-flash writing; `rw on @<offset> <size>` for an explicit region |
-| `rw off` | | lock writing |
+| `lfs ls [path]` | | list a littlefs directory; `lfs ls @<offset>` for an explicit flash base |
+| `lfs cat <path>` | | print a file |
+| `lfs put <path> <line>` | | replace a file with one line |
+| `lfs add <path> <line>` | | append one line |
+| `lfs rm <path>` | | delete a file |
+| `lfs rw` | | report the unlocked write range |
+| `lfs rw on` | | unlock internal-flash writing; `lfs rw on @<offset> <size>` for an explicit region |
+| `lfs rw off` | | lock writing |
+| `lfs format` | | format the unlocked littlefs volume; `lfs rw on` first |
 | `sd init [pins]` | | mount the SPI SD card; `sd` alone prints usage |
 | `sd ls [path]` | | list a FAT directory |
 | `sd cat <path>` | | print an SD file |
@@ -95,8 +96,8 @@ Argument rules that apply everywhere:
 - Paths cannot contain spaces — the console splits on whitespace and there is no
   quoting. The whole command line is limited to 199 bytes.
 - littlefs paths are relative to the volume root and must not begin with `/`:
-  `cat config.csv`, not `cat /config.csv`. `ls` accepts `/` for the root. Names
-  are limited to 63 bytes.
+  `lfs cat config.csv`, not `lfs cat /config.csv`. `lfs ls` accepts `/` for the
+  root. Names are limited to 63 bytes.
 - SD paths may be absolute (`/LOGS/TODAY.TXT`) and are limited to 127 bytes.
 - `blink` and `delay` hold the console for their whole duration.
 - Errors print as `<command>: <reason> (<number>)`, and SD errors as
@@ -105,13 +106,21 @@ Argument rules that apply everywhere:
 ## Writes and safety
 
 **Loading the payload, running it, and reading with it write nothing to flash.**
-`part`, `ls`, and `cat` are free. Writing files is the only thing that changes
-content, and it is gated.
+`part`, `lfs ls`, and `lfs cat` are free. Writing files is the only thing that
+changes content, and it is gated.
 
-littlefs (`put`, `add`, `rm`) needs `rw on`, which prints the exact byte range it
-unlocked and does not survive a reboot. Every program and erase is checked against
-that range, because littlefs takes its idea of its own size from the superblock
-without validating it — see [safe-flash-writes.md](docs/safe-flash-writes.md).
+littlefs (`lfs put`, `lfs add`, `lfs rm`, `lfs format`) needs `lfs rw on`, which
+prints the exact byte range it unlocked and does not survive a reboot. Every
+program and erase is checked against that range, because littlefs takes its idea
+of its own size from the superblock without validating it — see
+[safe-flash-writes.md](docs/safe-flash-writes.md).
+
+`lfs format` is a logical format: it writes a fresh superblock and root directory
+and bumps the revision, so the old tree disappears from mount, but its blocks are
+not wiped. It needs the unlock and leaves it in place. A volume too damaged to
+mount can be unlocked explicitly with `lfs rw on @<offset> <size>` (both values
+from `part`); that path assumes 4096-byte blocks, which is the geometry format
+writes.
 
 The SD card has its own lock. `sd init` mounts with writing locked, and `sd rw on`
 unlocks it independently of internal flash; `sd off`, another `sd init`, an
@@ -119,10 +128,10 @@ unmount, a reboot, and any transport error all lock it again. Mounting never
 formats.
 
 Writes are one line at a time and the command adds the trailing newline; there is
-no multi-line or binary write path. `put` truncates the old file before writing
-its replacement, and FAT writes are not atomic either, so an interrupted write can
-leave a partial file. New SD files get the fixed timestamp 2026-01-01, because
-there is no RTC.
+no multi-line or binary write path. `lfs put` truncates the old file before
+writing its replacement, and FAT writes are not atomic either, so an interrupted
+write can leave a partial file. New SD files get the fixed timestamp 2026-01-01,
+because there is no RTC.
 
 ## SPI SD cards
 
@@ -154,7 +163,7 @@ see [Verified on hardware](#verified-on-hardware).
 automation is a bounded session:
 
 ```sh
-printf 'info\npart\nls\n' | python run.py --port COM7 --seconds 5
+printf 'info\npart\nlfs ls\n' | python run.py --port COM7 --seconds 5
 ```
 
 Send one command at a time and wait for the `> ` prompt. The console has no flow
@@ -197,11 +206,11 @@ revision 3 part. The claims that matter, all checked rather than assumed:
 - **Loading and running write nothing.** A hash over the partition table and the
   head of the littlefs volume is byte-identical before and after a session that
   mounts the filesystem, lists it, reads files, and has a write attempt refused.
-- **Writing works, and stays inside the volume.** With `rw on`, the full cycle was
-  run against a real image: `put` created a file, `cat` read it back, `add`
-  appended and `cat` showed both lines, `ls` tracked the size at each step, `rm`
-  removed it. Pre-existing files were intact afterwards, with original sizes and
-  contents.
+- **Writing works, and stays inside the volume.** With `lfs rw on`, the full
+  cycle was run against a real image: `lfs put` created a file, `lfs cat` read it
+  back, `lfs add` appended and `lfs cat` showed both lines, `lfs ls` tracked the
+  size at each step, and `lfs rm` removed it. Pre-existing files were intact
+  afterwards, with original sizes and contents.
 - **The SPI SD card reads and writes on real hardware.** Against an ESP32 rev 3.1
   and a card reporting 61,069,312 sectors, `sd init` mounted the existing FAT
   volume, `sd ls` listed its files and directories, and with `sd rw on` the cycle
@@ -220,11 +229,11 @@ revision 3 part. The claims that matter, all checked rather than assumed:
 | | IRAM | DRAM image | `.bss` | stack | total RAM |
 |---|---|---|---|---|---|
 | base payload, no littlefs | 1,868 | 764 | 72 | 2,048 | 4,752 |
-| read-only (`part`, `ls`, `cat`) | 17,988 | 1,744 | 592 | 2,048 | 22,372 |
-| with writing (`put`, `add`, `rm`) | 19,728 | 2,348 | 992 | 2,048 | **25,116** |
-| with SPI SD / FatFs (current release) | 32,092 | 4,536 | 2,600 | 2,048 | **41,276** |
+| read-only (`part`, `lfs ls`, `lfs cat`) | 17,988 | 1,744 | 592 | 2,048 | 22,372 |
+| with writing (`lfs put`, `lfs add`, `lfs rm`) | 19,728 | 2,348 | 992 | 2,048 | **25,116** |
+| with SPI SD / FatFs (current release) | 32,444 | 5,040 | 2,600 | 2,048 | **42,132** |
 
-The current release uses 40.3 KiB of the 92 KiB the two windows offer.
+The current release uses 41.1 KiB of the 92 KiB the two windows offer.
 The figures above include the reserved stack; linker assertions enforce both
 memory windows. Filesystem objects and working buffers are static, with no heap.
 

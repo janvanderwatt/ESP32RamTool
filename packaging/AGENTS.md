@@ -22,14 +22,14 @@ script that puts it in RAM. No toolchain and no chip-side install are needed.
 
 ## Files here
 
-| File | What it is |
-|---|---|
-| `iram.bin` | IRAM payload; loads at `0x40080000` |
-| `dram.bin` | DRAM payload; loads at `0x3FFB0000` |
-| `manifest.txt` | Load addresses and entry point, read by `run.py` |
-| `run.py` | Host loader: uploads the payload, launches it, attaches the console |
-| `README.txt` | The short version of this file |
-| `AGENTS.md` | This file |
+| File           | What it is                                                          |
+| -------------- | ------------------------------------------------------------------- |
+| `iram.bin`     | IRAM payload; loads at `0x40080000`                                 |
+| `dram.bin`     | DRAM payload; loads at `0x3FFB0000`                                 |
+| `manifest.txt` | Load addresses and entry point, read by `run.py`                    |
+| `run.py`       | Host loader: uploads the payload, launches it, attaches the console |
+| `README.txt`   | The short version of this file                                      |
+| `AGENTS.md`    | This file                                                           |
 
 ## Load it
 
@@ -61,8 +61,8 @@ those write flash and reset the chip when they finish.
 - The payload echoes what you send, so a reply is the echoed command, the
   output, and the next `> `.
 - Decode output as latin-1 (command replies are ASCII in practice).
-- There is no per-command time limit: `part`, `ls`, `sd`, and `cat` of a large
-  file hold the console for as long as they take. Treat the prompt as
+- There is no per-command time limit: `part`, `lfs ls`, `sd`, and `lfs cat` of
+  a large file hold the console for as long as they take. Treat the prompt as
   completion and set a generous read timeout.
 - **Pacing matters.** The console has no flow control and a 128-byte receive
   FIFO. While a command does flash or SD I/O it is not draining the FIFO, so
@@ -75,7 +75,7 @@ those write flash and reset the chip when they finish.
 For a handful of short commands, pipe them in and bound the session:
 
 ```sh
-printf 'info\npart\nls\n' | python run.py --port COM7 --seconds 5
+printf 'info\npart\nlfs ls\n' | python run.py --port COM7 --seconds 5
 ```
 
 Everything, including `run.py`'s own messages and the command echoes, goes to
@@ -124,50 +124,51 @@ def command(s, line, timeout=15.0):
 s = open_console(PORT)
 read_until_prompt(s)                 # banner, chip info, first prompt
 print(command(s, "info"))
-print(command(s, "ls"))
+print(command(s, "lfs ls"))
 s.dtr = False
 s.rts = False
 s.close()                            # the chip keeps running
 ```
 
-A `cat` of a file whose contents include a literal `> ` can end the read early,
-because the prompt is the only delimiter there is; prefer files whose content
-you know when parsing `cat` output automatically.
+An `lfs cat` of a file whose contents include a literal `> ` can end the read
+early, because the prompt is the only delimiter there is; prefer files whose
+content you know when parsing `lfs cat` output automatically.
 
 ## Commands
 
 `help` (or `?`) prints this list in-session and is the runtime authority.
 
-| Command | Aliases | Notes |
-|---|---|---|
-| `info` | — | MAC address and silicon revision; also printed at startup |
-| `g <pin>` | `gpio`, `s` | read a GPIO; pins 0–31 |
-| `g <pin> <0\|1>` | `gpio`, `s` | set a GPIO; any non-zero value is high; `g <pin> read` also reads |
-| `blink <pin> [n] [ms]` | `b` | `n` defaults to 10, `ms` to 100; blocks for 2·n·ms |
-| `r <addr>` | `read` | read a 32-bit register |
-| `w <addr> <val>` | `write` | write a 32-bit register |
-| `delay <ms>` | `d` | blocks for that long |
-| `part` | `parts` | show the partition table |
-| `ls [path]` | `dir` | list a littlefs directory; `ls @<offset>` uses an explicit flash offset |
-| `cat <path>` | `type` | print a file |
-| `put <path> <line>` | — | replace a file with one line |
-| `add <path> <line>` | `append` | append one line |
-| `rm <path>` | `del` | delete a file |
-| `rw` | — | report the currently unlocked write range |
-| `rw on` | — | unlock internal-flash writing; also `rw on @<offset> <size>` |
-| `rw off` | — | lock writing |
-| `sd init [pins]` | — | mount SPI SD; `sd` alone prints usage |
-| `sd ls [path]` | — | list a FAT directory |
-| `sd cat <path>` | — | print an SD file |
-| `sd put <path> <line>` | — | replace an SD file with one line |
-| `sd add <path> <line>` | — | append one line to an SD file |
-| `sd mkdir <path>` | — | create one SD directory level |
-| `sd rm <path>` | — | remove an SD file or empty directory |
-| `sd rw [on\|off]` | — | SD write lock, separate from internal flash |
-| `sd off` | — | unmount SD and lock writing |
-| `reset` | — | unmount SD and reset; the chip then boots the flashed application |
-| `reboot` | `x` | reset into the download bootloader |
-| `help` | `?` | the command list |
+| Command                 | Aliases     | Notes                                                                       |
+| ----------------------- | ----------- | --------------------------------------------------------------------------- |
+| `info`                  | —           | MAC address and silicon revision; also printed at startup                   |
+| `g <pin>`               | `gpio`, `s` | read a GPIO; pins 0–31                                                      |
+| `g <pin> <0\|1>`        | `gpio`, `s` | set a GPIO; any non-zero value is high; `g <pin> read` also reads           |
+| `blink <pin> [n] [ms]`  | `b`         | `n` defaults to 10, `ms` to 100; blocks for 2·n·ms                          |
+| `r <addr>`              | `read`      | read a 32-bit register                                                      |
+| `w <addr> <val>`        | `write`     | write a 32-bit register                                                     |
+| `delay <ms>`            | `d`         | blocks for that long                                                        |
+| `part`                  | `parts`     | show the partition table                                                    |
+| `lfs ls [path]`         | —           | list a littlefs directory; `lfs ls @<offset>` uses an explicit flash offset |
+| `lfs cat <path>`        | —           | print a file                                                                |
+| `lfs put <path> <line>` | —           | replace a file with one line                                                |
+| `lfs add <path> <line>` | —           | append one line                                                             |
+| `lfs rm <path>`         | —           | delete a file                                                               |
+| `lfs rw`                | —           | report the currently unlocked write range                                   |
+| `lfs rw on`             | —           | unlock internal-flash writing; also `lfs rw on @<offset> <size>`            |
+| `lfs rw off`            | —           | lock writing                                                                |
+| `lfs format`            | —           | format the unlocked littlefs volume; needs `lfs rw on` first                |
+| `sd init [pins]`        | —           | mount SPI SD; `sd` alone prints usage                                       |
+| `sd ls [path]`          | —           | list a FAT directory                                                        |
+| `sd cat <path>`         | —           | print an SD file                                                            |
+| `sd put <path> <line>`  | —           | replace an SD file with one line                                            |
+| `sd add <path> <line>`  | —           | append one line to an SD file                                               |
+| `sd mkdir <path>`       | —           | create one SD directory level                                               |
+| `sd rm <path>`          | —           | remove an SD file or empty directory                                        |
+| `sd rw [on\|off]`       | —           | SD write lock, separate from internal flash                                 |
+| `sd off`                | —           | unmount the card and lock writing                                           |
+| `reset`                 | —           | unmount SD and reset; the chip then boots the flashed application           |
+| `reboot`                | `x`         | reset into the download bootloader                                          |
+| `help`                  | `?`         | the command list                                                            |
 
 Argument rules:
 
@@ -178,11 +179,13 @@ Argument rules:
   flash controller, so it can reset or wedge the running chip.
 - Paths cannot contain spaces or tabs; there is no quoting.
 - littlefs paths are relative to the volume root and must not begin with `/` for
-  `cat`, `put`, `add`, and `rm` (`cat config.csv`, not `cat /config.csv`).
-  `ls` accepts `/` for the root. Names are limited to 63 bytes.
+  `lfs cat`, `lfs put`, `lfs add`, and `lfs rm` (`lfs cat config.csv`, not
+  `lfs cat /config.csv`). `lfs ls` accepts `/` for the root. Names are limited to
+  63 bytes.
 - SD paths may be absolute (`/LOGS/TODAY.TXT`) and are limited to 127 bytes.
 - The whole command line is limited to 199 bytes; longer input is cut at the
-  limit, so keep lines short and write long content across several `add` calls.
+  limit, so keep lines short and write long content across several `lfs add`
+  calls.
 - `blink` and `delay` hold the console for their whole duration.
 - Errors print as `<command>: <reason> (<number>)`; SD errors as
   `SD: <reason> (<number>)`; an unknown command prints `unknown. 'help'`.
@@ -192,11 +195,18 @@ Argument rules:
 Loading the payload, running it, and reading with it write nothing to flash.
 Writing files does, and only after it is unlocked.
 
-- **littlefs** (`put`, `add`, `rm`) needs `rw on`, which prints the exact byte
-  range it unlocked. Every program and erase is checked against that range,
-  because littlefs takes its idea of its own size from the on-disk superblock
-  without validating it. The lock is in RAM: it does not survive a reset or
-  reboot, and `rw off` locks again.
+- **littlefs** (`lfs put`, `lfs add`, `lfs rm`, `lfs format`) needs
+  `lfs rw on`, which prints the exact byte range it unlocked. Every program and
+  erase is checked against that range, because littlefs takes its idea of its
+  own size from the on-disk superblock without validating it. The lock is in
+  RAM: it does not survive a reset or reboot, and `lfs rw off` locks again.
+- **`lfs format` is a logical format, not a secure erase.** It writes a fresh
+  superblock and root directory and bumps the revision, so the old tree is
+  ignored; its blocks are not wiped. Formatting needs the unlock and leaves it
+  in place, so `lfs put` works straight afterwards.
+- **A volume too damaged to mount can still be formatted.** Unlock it explicitly
+  with `lfs rw on @<offset> <size>` (get both from `part`); that path assumes
+  4096-byte blocks when nothing mounts, and `lfs format` writes that geometry.
 - **SD** writes need their own `sd rw on`. `sd init` mounts with writing locked;
   writing locks again on `sd off`, another `sd init`, an unmount, a reboot, or a
   transport error.
@@ -204,8 +214,9 @@ Writing files does, and only after it is unlocked.
   supported. New files get the timestamp 2026-01-01, because there is no RTC.
 - Writes are one line at a time and the command adds the trailing newline.
   There is no multi-line or binary write path.
-- `put` truncates the existing file before writing its replacement. FAT writes
-  are not atomic either, so an interrupted write can leave a partial file.
+- `lfs put` truncates the existing file before writing its replacement, and
+  `sd put` does the same. FAT writes are not atomic either, so an interrupted
+  write can leave a partial file.
 - Do not remove the SD card mid-command; wait for the prompt and `sd off` first.
 
 ## Tricks of the trade
@@ -216,12 +227,13 @@ Writing files does, and only after it is unlocked.
 - **`reset` hands the chip back to the flashed application.** That firmware may
   claim the UART, so type at it only if you mean to; run `run.py` again for
   RamTool.
-- **Ask the tool instead of guessing.** `rw` reports the unlocked range, `part`
-  the partition table, `info` the chip, and `ls @<offset>` finds a littlefs
-  volume at a raw flash offset when the partition table does not describe it.
+- **Ask the tool instead of guessing.** `lfs rw` reports the unlocked range,
+  `part` the partition table, `info` the chip, and `lfs ls @<offset>` finds a
+  littlefs volume at a raw flash offset when the partition table does not
+  describe it.
 - **Partition labels and subtypes are not evidence of what is on them.** A
-  partition labelled `spiffs` commonly holds a littlefs image; `ls` tries the
-  candidates and mounts the one that works.
+  partition labelled `spiffs` commonly holds a littlefs image; `lfs ls` tries
+  the candidates and mounts the one that works.
 - **Bound automated sessions** with `--seconds` and a read timeout, so a wedged
   command cannot hold the serial port forever.
 - **Set `$RAMTOOL_PORT`** to pin the device when a machine has several ports.
@@ -235,6 +247,9 @@ Writing files does, and only after it is unlocked.
   commands**, and the result looks like a flaky link rather than an overrun.
 - **The payload is gone after any reset.** There is no persistence and no
   session to resume; reload with `run.py`.
+- **Bare littlefs commands no longer exist.** `ls`, `cat`, `put`, `add`, `rm`,
+  and `rw` were replaced by `lfs ls`, `lfs cat`, and so on; `lfs` or `help`
+  prints the current spelling.
 - **A second `run.py` resets the chip** on its way into the bootloader, which
   destroys the running payload. Expected, not a fault.
 - **SD transport errors invalidate the mount.** Check wiring and power, then run
@@ -242,7 +257,7 @@ Writing files does, and only after it is unlocked.
 - **GPIO 34–39 are input-only and unreachable here**: `g`, `blink`, and the pin
   arguments accept 0–31 only.
 - **`sd` is slow** (software SPI at up to 250 kHz), so large files take a long
-  time and a `cat` of one holds the console throughout.
+  time and a `sd cat` of one holds the console throughout.
 - **Windows: a COM port cannot be passed into a Linux container.** Run `run.py`
   on the host, or bridge the port over TCP with `tools/serial_bridge.py` from
   the repository; DTR/RTS cannot cross a socket, so the bridge owns the reset.

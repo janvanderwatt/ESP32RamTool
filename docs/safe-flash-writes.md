@@ -6,7 +6,7 @@ writing needs a clamp, not just a lock.**
 
 ## The lock, and why a lock alone is nearly worthless
 
-Writing is gated behind an explicit `rw on`, which is the right first line of
+Writing is gated behind an explicit `lfs rw on`, which is the right first line of
 defence. But the interesting half is what the unlock has to promise.
 
 ### Where the size comes from — and why it is dangerous
@@ -29,7 +29,7 @@ including the running application, NVS, and the partition table itself.
 ### The clamp
 
 `bd_prog` and `bd_erase` therefore check every address against the region that
-`rw on` established. The region comes from the partition table's own size, rounded
+`lfs rw on` established. The region comes from the partition table's own size, rounded
 **down** to a whole number of blocks:
 
 ```c
@@ -41,22 +41,27 @@ about where the volume ends. The unlocked region is printed when it is granted, 
 it is visible rather than implied:
 
 ```
-> rw on
+> lfs rw on
 writing enabled, 0x00670000 + 0x00180000. this does not survive a reboot.
 ```
 
 ### Which is why explicit offsets need an explicit size
 
-`rw on @<offset>` has no partition size behind it, so there is nothing to clamp
-against. Rather than guess, `lfsvol_write_enable` refuses that combination unless a
-size is given:
+`lfs rw on @<offset>` has no partition size behind it, so there is nothing to
+clamp against. Rather than guess, `lfsvol_write_enable` refuses that combination
+unless a size is given:
 
 ```
-rw on @<offset> <size>
+lfs rw on @<offset> <size>
 ```
 
-Guessing here would be worse than useless — it would look like the safety mechanism
-was present when it was not.
+With both bounds explicit, an unmountable region can still be unlocked -- the
+block geometry falls back to 4096 because nothing supplied one. That is what lets
+`lfs format` repair a damaged volume. The bounds are not guessed, and the clamp
+still enforces them.
+
+Guessing the bounds would be worse than useless — it would look like the safety
+mechanism was present when it was not.
 
 ## Where the lock lives
 
@@ -81,28 +86,39 @@ write can cost you the file being written.
 
 This is why the unlock prints a warning and why it does not persist.
 
+## Formatting
+
+`lfs format` is a write path like any other: it needs `lfs rw on` and reaches only
+the unlocked region. It is a logical format, not a secure erase. littlefs writes a
+fresh superblock and root directory and bumps the revision, so the old tree is
+ignored on the next mount, but its blocks are not wiped. The unlock is not
+consumed, so `lfs put` works immediately afterwards.
+
 ## What is still never written
 
 - **Loading and running the payload.** The esptool stub is a RAM upload.
-- **Reading.** `ls`, `cat`, `part` and the partition scan are all `SPIRead`.
+- **Reading.** `lfs ls`, `lfs cat`, `part` and the partition scan are all
+  `SPIRead`.
 
 Verified by hashing the partition table and the head of the volume before and after
 a session that mounts, lists, reads, and has a write attempt refused: byte-identical.
-With `rw on`, the same regions change, as they must.
+With `lfs rw on`, the same regions change, as they must.
 
 ## Commands
 
 | | |
 |---|---|
-| `rw` | report whether writing is unlocked, and the region |
-| `rw on` | unlock, discovering the volume and its size |
-| `rw on @<offset> <size>` | unlock an explicit region with explicit bounds |
-| `rw off` | re-lock |
-| `put <path> <line>` | replace a file with one line, creating it if absent |
-| `add <path> <line>` | append one line, creating the file if absent |
-| `rm <path>` | delete a file |
+| `lfs rw` | report whether writing is unlocked, and the region |
+| `lfs rw on` | unlock, discovering the volume and its size |
+| `lfs rw on @<offset> <size>` | unlock an explicit region with explicit bounds |
+| `lfs rw off` | re-lock |
+| `lfs put <path> <line>` | replace a file with one line, creating it if absent |
+| `lfs add <path> <line>` | append one line, creating the file if absent |
+| `lfs rm <path>` | delete a file |
+| `lfs format` | format the unlocked region; requires the unlock |
 
-`put`, `add` and `rm` need the unlock; `cat`, `ls` and `part` do not.
+`lfs put`, `lfs add`, `lfs rm` and `lfs format` need the unlock; `lfs cat`,
+`lfs ls` and `part` do not.
 
 The trailing newline is added by `lfsvol`, not the caller, so a file cannot end up
 without line structure by forgetting it.

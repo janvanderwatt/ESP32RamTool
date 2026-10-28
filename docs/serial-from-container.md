@@ -45,9 +45,9 @@ docker run --rm --add-host host.docker.internal:host-gateway -it \
 `--add-host host.docker.internal:host-gateway` is only needed for a plain Docker
 Engine; Docker Desktop provides `host.docker.internal` already.
 
-Verified end to end: stub upload, payload launch, `part`, `ls`, `cat`, and a full
-write cycle (`rw on`, `put`, `add`, `cat`, `rm`, `rw off`) all through the
-container.
+Verified end to end: stub upload, payload launch, `part`, `lfs ls`, `lfs cat`,
+and a full write cycle (`lfs rw on`, `lfs put`, `lfs add`, `lfs cat`, `lfs rm`,
+`lfs rw off`) all through the container.
 
 ## The cost: no DTR/RTS, so no reset
 
@@ -118,14 +118,14 @@ only that no serial data arrived. This cost one debugging round here.
 
 Send commands faster than the payload can consume them and they are lost, silently.
 
-The console polls the UART receive FIFO, which on this part is 128 bytes. `ls` and
-`part` spend real time doing SPI reads, during which the payload is not draining
-the FIFO. Piping a screenful of commands at once overruns it:
+The console polls the UART receive FIFO, which on this part is 128 bytes.
+`lfs ls` and `part` spend real time doing SPI reads, during which the payload is
+not draining the FIFO. Piping a screenful of commands at once overruns it:
 
 ```
-> ls
+> lfs ls
   [f] ECo.csv             69
-> rw off
+> lfs rw off
 writing locked
 > sv                 <-- tail of a command, mangled
 unknown. 'help'
