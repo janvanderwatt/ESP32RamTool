@@ -662,7 +662,16 @@ int lfsvol_write_enable(uint32_t base, uint32_t size)
 
     err = lfsvol_locate(base, &off, &bsize, &psize, &found);
     if (err) {
-        return err;
+        /* An explicit region can still be unlocked when nothing mounts: both
+         * bounds are known, so only the block geometry is assumed. That is what
+         * lets 'lfs format' repair a volume too damaged to mount -- lfs_format
+         * rewrites the superblock with this geometry. */
+        if (base == 0 || size == 0) {
+            return err;
+        }
+        off = base;
+        psize = size;
+        bsize = 4096;
     }
 
     /* An explicit offset with no size is refused rather than guessed. The clamp
@@ -782,6 +791,51 @@ int lfsvol_rm(const char *path)
     return err;
 }
 
+/* Format the unlocked region.
+ *
+ * The block count is set explicitly here, unlike every mount path: lfs_format
+ * writes the count it is given into the new superblock, and a zero count would
+ * produce a volume whose allocator divides by zero on the next mount. The
+ * geometry comes from the unlock, so format never reaches beyond it -- every
+ * program and erase still goes through write_permitted.
+ *
+ * lfs_format deinitializes the filesystem itself, so there is nothing to
+ * unmount afterwards. */
+int lfsvol_format(uint32_t *base, uint32_t *size, uint32_t *block_size)
+{
+    uint32_t blocks;
+    int err;
+
+    if (wr_size == 0 || wr_block_size == 0) {
+        return LFSVOL_ERR_LOCKED;
+    }
+
+    blocks = wr_size / (uint32_t)wr_block_size;
+    if (blocks == 0) {
+        return LFSVOL_ERR_LOCKED;
+    }
+
+    lfsvol_cfg_defaults(wr_base);
+    lfsvol_cfg.block_size = wr_block_size;
+    lfsvol_cfg.block_count = blocks;
+
+    err = lfs_format(&lfsvol_fs, &lfsvol_cfg);
+    if (err) {
+        return err;
+    }
+
+    if (base) {
+        *base = wr_base;
+    }
+    if (size) {
+        *size = wr_size;
+    }
+    if (block_size) {
+        *block_size = (uint32_t)wr_block_size;
+    }
+    return 0;
+}
+
 /* --------------------------------------------------------------------------
  * Error strings
  *
@@ -796,7 +850,7 @@ const char *lfsvol_strerror(int err)
         return "ok";
     }
     if (err == LFSVOL_ERR_LOCKED) {
-        return "writing is locked; 'rw on' first";
+        return "writing is locked; 'lfs rw on' first";
     }
     /* Switch on err itself, not on -err: the case labels are the negative enum
      * values, so negating here silently falls through to "unknown" for every

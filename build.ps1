@@ -371,7 +371,8 @@ Usage:
     --seconds N   Stay attached for N seconds, then exit
     --boot        Enter download mode and stay there
 
-The payload runs entirely from RAM. Nothing is written to flash.
+The payload runs entirely from RAM; loading and starting it write nothing to
+flash. Commands that write do so only after an explicit unlock.
 "@
 Set-Content -Path (Join-Path $dist 'README.txt') -Value $usage -Encoding utf8
 

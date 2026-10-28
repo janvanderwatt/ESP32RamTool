@@ -11,6 +11,7 @@
  *   - the one function littlefs expects the host to supply, lfs_crc
  *   - partition-table scanning, so commands find the filesystem on their own
  *   - directory walking, whole-file reading, single-line writing, and removal
+ *   - formatting the region that writing has been unlocked for
  *
  * Writing is gated. See lfsvol_write_enable before implementing anything that
  * erases flash; the short version is that this is the one part of the tool that
@@ -70,7 +71,9 @@ int lfsvol_partitions(lfsvol_part_fn fn, void *ctx);
  * base 0 means "find the filesystem the usual way" and use its partition size.
  * An explicit base MUST be given with an explicit size, because without one
  * there is no way to know where the volume stops and the clamp below would have
- * nothing to clamp against; that combination is refused.
+ * nothing to clamp against; that combination is refused. An explicit region
+ * that holds nothing mountable is still unlocked, with a 4096-byte block
+ * geometry, so that lfsvol_format can repair it.
  *
  * The region survives until lfsvol_write_disable, and does not survive a
  * reboot, since it lives in .bss.
@@ -93,6 +96,17 @@ int lfsvol_add(const char *path, const char *text);
 
 /* Delete `path`. Fails if it is a directory or does not exist. */
 int lfsvol_rm(const char *path);
+
+/* Format the region unlocked by lfsvol_write_enable.
+ *
+ * This is a logical format, not an erase: lfs_format writes a fresh superblock
+ * and root directory and bumps the revision, so the previous tree is ignored,
+ * but its blocks are not wiped. The unlock is not consumed, so writing works
+ * immediately afterwards.
+ *
+ * Fills base, size and block_size (any may be NULL) with the geometry written.
+ * Returns 0, LFSVOL_ERR_LOCKED if nothing is unlocked, or a littlefs error. */
+int lfsvol_format(uint32_t *base, uint32_t *size, uint32_t *block_size);
 
 /* --------------------------------------------------------------- messages */
 

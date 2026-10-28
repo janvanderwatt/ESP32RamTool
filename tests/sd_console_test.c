@@ -27,6 +27,8 @@ int lfsvol_put(const char *p, const char *text)
 int lfsvol_add(const char *p, const char *text)
 { (void)p; (void)text; assert(0); return -1; }
 int lfsvol_rm(const char *p) { (void)p; assert(0); return -1; }
+int lfsvol_format(uint32_t *base, uint32_t *size, uint32_t *block_size)
+{ (void)base; (void)size; (void)block_size; assert(0); return -1; }
 const char *lfsvol_strerror(int err) { (void)err; assert(0); return ""; }
 
 static char console[4096];

@@ -1,9 +1,9 @@
 # SPI SD card files
 
 RamTool can read and write an existing FAT12/16/32 SD card without starting
-the flash application. The new commands use the `sd` prefix; the original
-`ls`, `put`, `add`, `rm`, and `rw` commands still address internal littlefs.
-No card access happens until `sd init`. There is no formatting command.
+the flash application. The SD commands use the `sd` prefix; the `lfs` commands
+address internal littlefs. No card access happens until `sd init`. There is no
+SD formatting command (`lfs format` formats internal littlefs only).
 
 ## FlotSense wiring
 
@@ -43,17 +43,15 @@ sd rm /logs/notes.txt
 sd rm /logs
 sd rw off
 sd off
-```
-
-`put` replaces or creates a file; `add` appends or creates it. Each adds a
-newline and closes/synchronizes the file before reporting success. `rm`
-also removes empty directories. `mkdir` creates one directory level.
+````sd put` replaces or creates a file; `sd add` appends or creates it. Each adds a
+newline and closes/synchronizes the file before reporting success. `sd rm` also
+removes empty directories. `sd mkdir` creates one directory level.
 Names are UTF-8 and long names are supported. Console paths cannot contain
 whitespace, must fit in 127 bytes, and the entire command must fit in 199
 bytes. As with existing commands, pace serial input and wait for the prompt.
 
-`sd rw on` unlocks only the SD card. Internal flash's `rw on` does not unlock
-it. Initialization, unmount, reboot, and transport failures lock SD writing.
+`sd rw on` unlocks only the SD card. Internal flash's `lfs rw on` does not
+unlock it. Initialization, unmount, reboot, and transport failures lock SD writing.
 Listing and reading leave card data unchanged. Writes check the physical
 card capacity, including overflow-safe multi-sector bounds checks.
 
@@ -97,7 +95,7 @@ A transport error invalidates the mount. Check wiring/power and run `sd init`
 again. A card which remains stuck may need a power cycle. Do not remove the
 card during an operation; wait for completion and use `sd off` first. FAT
 writes are not atomic: an error, full disk, or lost power may leave a partial
-file, and `put` truncates the old file before writing its replacement.
+file, and `sd put` truncates the old file before writing its replacement.
 
 ## Research references
 
@@ -127,7 +125,8 @@ were used to mount the existing FAT volume and run the full write cycle:
 `sd init`, `sd ls`, `sd rw on`, `sd put`/`sd cat`/`sd add`/`sd cat` on
 `/RAMTEST.TXT`, `sd ls`, `sd rm`, `sd rw off`, `sd off`. Pre-existing card
 files and directories were intact afterwards. The internal littlefs volume was
-exercised with the same `rw on` … `rw off` cycle in the same session and its
+exercised with the same `lfs rw on` … `lfs rw off` cycle in the same session and
+its
 pre-existing files were unchanged. This confirms the transport and file paths
 on one card and board; it is not a substitute for checking a specific setup.
 
