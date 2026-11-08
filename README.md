@@ -342,14 +342,19 @@ green container build is real evidence the repository has no machine-specific
 dependencies left in it — not a parallel build script that could quietly drift.
 
 ```sh
-docker build -t ramtool .               # build the payload inside the image
-docker run --rm ramtool ls -l build     # list the artifacts in that image
+docker compose build                    # build the payload inside the image
+docker compose run --rm tools           # copy it out to ./build and ./dist
 ```
 
-The image holds the payload; `./build` does not. To get the artifacts onto the
-host, where `run.py` can use them, copy them out (no host toolchain needed):
+The image holds the payload; the host does not. Getting it out is a copy, not a
+run, so it needs no serial device and no host toolchain. `tools` mounts the
+image's artifacts at `/out` and copies them through the mount into `./build`
+and `./dist`, so the host gets exactly what was just built. Work from there.
+
+Without compose, the same delivery is a `docker cp`:
 
 ```sh
+docker build -t ramtool .
 docker create --name ramtool-out ramtool
 docker cp ramtool-out:/src/build/. build/
 docker cp ramtool-out:/src/dist/.  dist/
@@ -359,20 +364,19 @@ docker rm ramtool-out
 It pins ESP-IDF v5.5.4 (xtensa-esp-elf 14.2.0) and installs PowerShell so the
 build script runs unmodified. The runtime stage carries the build's `dist/` folder
 and the notes, so a container can hand out the standalone distribution as well as
-drive hardware. `docker-compose.yml` wraps the two things people actually want:
+drive hardware. `docker-compose.yml` wraps the three things people actually want:
 
 ```sh
 docker compose build                    # build the payload inside the image
-docker compose run --rm tools           # list the host's ./build directory
+docker compose run --rm tools           # copy it out to ./build and ./dist
 docker compose --profile flash run --rm flash   # drive real hardware
 ```
 
 Driving hardware from the container needs the serial device passed through, which
 is reliable on a Linux Docker host and unreliable under Docker Desktop on Windows
-and macOS. There, build in the container, copy the artifacts to the host with
-the `docker cp` recipe above, and run `run.py` from `./build`. A container build
-does not populate `./build` by itself: the compose volumes are host-to-container
-and only exist while a container runs.
+and macOS. There, build in the container, run `docker compose run --rm tools` to
+copy the payload out, and run `run.py` from the host. A container build does not
+populate `./build` by itself: the copy is a separate, explicit step.
 
 **On Windows, `--device` cannot reach a COM port at all.** Bridge it over TCP
 instead. `tools/serial_bridge.py` does this and needs no changes to `run.py`,

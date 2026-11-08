@@ -4,7 +4,7 @@
 # actually want easy:
 #
 #   docker compose build          build the payload in the container
-#   docker compose run --rm tools list ./build on the host
+#   docker compose run --rm tools copy the payload out to ./build and ./dist
 #
 # Driving real hardware needs the serial device passed through, which is what the
 # `flash` service does. Serial passthrough is reliable on a Linux Docker host and
@@ -14,26 +14,39 @@
 #   docker compose --profile flash run --rm flash
 #
 # A `docker compose build` writes the payload into the image, not into ./build:
-# build.ps1 writes next to itself, and the volumes below are host-to-container
-# and exist only while a container runs. Copy the artifacts out to use them from
-# the host:
+# build.ps1 writes next to itself, and no volume exists at build time. The
+# `tools` service is the way out - it copies the image's artifacts through a
+# bind mount onto the host, refreshing ./build and ./dist:
 #
-#   docker create --name ramtool-out ramtool
-#   docker cp ramtool-out:/src/build/. build/
-#   docker cp ramtool-out:/src/dist/.  dist/
-#   docker rm ramtool-out
+#   docker compose build
+#   docker compose run --rm tools
+#
+# Then run the payload from the host, where the serial device is. Without
+# compose, the same copy is `docker cp <container>:/src/build/. build/`.
 
 services:
+  # Delivers the built payload to the host. A build writes into the image; this
+  # copies it out, so the host runs exactly what was built without a toolchain.
   tools:
     build:
       context: .
       dockerfile: Dockerfile
     image: ramtool
     volumes:
-      # Host-to-container only: this hides the image's fresh build/ behind the
-      # host directory, so it lists what is on the host, not what was built.
-      - ./build:/src/build
-    command: ["ls", "-l", "/src/build"]
+      # Mounted at /out, not /src/build, so the image's own artifacts are the
+      # source and these host directories are the destination. Writes through a
+      # bind mount do reach the host.
+      - ./build:/out/build
+      - ./dist:/out/dist
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        mkdir -p /out/build /out/dist
+        cp -a /src/build/. /out/build/
+        cp -a /src/dist/. /out/dist/
+        ls -l /out/build
 
   flash:
     profiles: ["flash"]
@@ -50,8 +63,7 @@ services:
       - "/dev/ttyUSB0:/dev/ttyUSB0"
     volumes:
       # Shadows the image's /src/build, so run.py loads the host's build/
-      # directory. Populate it first: build.ps1 on the host, or the docker cp
-      # recipe at the top of this file.
+      # directory. Refresh it first with `docker compose run --rm tools`.
       - ./build:/src/build
     # Interactive: the payload keeps running until Ctrl-C.
     stdin_open: true

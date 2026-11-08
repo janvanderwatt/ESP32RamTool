@@ -5,18 +5,18 @@
 - Prefer the Docker-based build for compiling and validating RamTool. Do not run
   `build.ps1` directly on the host unless the task specifically requires testing
   the host toolchain path.
-- Build the image and verify its artifacts with:
+- Build the image, then deliver its artifacts to the host with:
 
   ```sh
   docker compose build
-  docker run --rm ramtool ls -l build dist
+  docker compose run --rm tools
   ```
 
   The Dockerfile runs the repository's `build.ps1` with its pinned ESP32
   toolchain. The artifacts are written inside the image, not into `build/`:
-  `build.ps1` writes next to itself, and the compose volumes are host-to-container
-  and only exist while a container runs. Copy them out for the host loader with
-  `docker cp <container>:/src/build/. build/`, and the same for `dist/`.
+  `build.ps1` writes next to itself, and no volume exists at build time. The
+  `tools` service copies them through a bind mount into `./build` and `./dist`,
+  which is what the host loader and `run.py` read.
 - On Windows and macOS, use Docker for building and run `run.py` on the host to
   access serial hardware. Container serial passthrough is not reliable on those
   platforms. See `docker-compose.yml` for Linux and Windows-over-TCP options.
