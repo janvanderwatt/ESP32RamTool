@@ -342,8 +342,18 @@ green container build is real evidence the repository has no machine-specific
 dependencies left in it — not a parallel build script that could quietly drift.
 
 ```sh
-docker build -t ramtool .
-docker run --rm -v "$PWD/build:/src/build" ramtool ls -l /src/build
+docker build -t ramtool .               # build the payload inside the image
+docker run --rm ramtool ls -l build     # list the artifacts in that image
+```
+
+The image holds the payload; `./build` does not. To get the artifacts onto the
+host, where `run.py` can use them, copy them out (no host toolchain needed):
+
+```sh
+docker create --name ramtool-out ramtool
+docker cp ramtool-out:/src/build/. build/
+docker cp ramtool-out:/src/dist/.  dist/
+docker rm ramtool-out
 ```
 
 It pins ESP-IDF v5.5.4 (xtensa-esp-elf 14.2.0) and installs PowerShell so the
@@ -352,15 +362,17 @@ and the notes, so a container can hand out the standalone distribution as well a
 drive hardware. `docker-compose.yml` wraps the two things people actually want:
 
 ```sh
-docker compose build                    # build the payload in the container
-docker compose run --rm tools           # list the artifacts it produced
+docker compose build                    # build the payload inside the image
+docker compose run --rm tools           # list the host's ./build directory
 docker compose --profile flash run --rm flash   # drive real hardware
 ```
 
 Driving hardware from the container needs the serial device passed through, which
 is reliable on a Linux Docker host and unreliable under Docker Desktop on Windows
-and macOS. There, build in the container and run `run.py` on the host - the
-artifacts land in `./build` either way, so nothing is lost.
+and macOS. There, build in the container, copy the artifacts to the host with
+the `docker cp` recipe above, and run `run.py` from `./build`. A container build
+does not populate `./build` by itself: the compose volumes are host-to-container
+and only exist while a container runs.
 
 **On Windows, `--device` cannot reach a COM port at all.** Bridge it over TCP
 instead. `tools/serial_bridge.py` does this and needs no changes to `run.py`,

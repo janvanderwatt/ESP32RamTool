@@ -9,12 +9,14 @@
 
   ```sh
   docker compose build
-  docker compose run --rm tools
+  docker run --rm ramtool ls -l build dist
   ```
 
   The Dockerfile runs the repository's `build.ps1` with its pinned ESP32
-  toolchain. Compose exposes `build/` on the host so the generated artifacts can
-  be used with the host loader.
+  toolchain. The artifacts are written inside the image, not into `build/`:
+  `build.ps1` writes next to itself, and the compose volumes are host-to-container
+  and only exist while a container runs. Copy them out for the host loader with
+  `docker cp <container>:/src/build/. build/`, and the same for `dist/`.
 - On Windows and macOS, use Docker for building and run `run.py` on the host to
   access serial hardware. Container serial passthrough is not reliable on those
   platforms. See `docker-compose.yml` for Linux and Windows-over-TCP options.

@@ -4,7 +4,7 @@
 # actually want easy:
 #
 #   docker compose build          build the payload in the container
-#   docker compose run --rm tools list the artifacts it produced
+#   docker compose run --rm tools list ./build on the host
 #
 # Driving real hardware needs the serial device passed through, which is what the
 # `flash` service does. Serial passthrough is reliable on a Linux Docker host and
@@ -13,8 +13,15 @@
 #
 #   docker compose --profile flash run --rm flash
 #
-# If you are on Windows or macOS, build in the container and run run.py on the
-# host instead. Nothing is lost: the artifacts land in ./build either way.
+# A `docker compose build` writes the payload into the image, not into ./build:
+# build.ps1 writes next to itself, and the volumes below are host-to-container
+# and exist only while a container runs. Copy the artifacts out to use them from
+# the host:
+#
+#   docker create --name ramtool-out ramtool
+#   docker cp ramtool-out:/src/build/. build/
+#   docker cp ramtool-out:/src/dist/.  dist/
+#   docker rm ramtool-out
 
 services:
   tools:
@@ -23,7 +30,8 @@ services:
       dockerfile: Dockerfile
     image: ramtool
     volumes:
-      # Put the build products back on the host so they can be flashed from it.
+      # Host-to-container only: this hides the image's fresh build/ behind the
+      # host directory, so it lists what is on the host, not what was built.
       - ./build:/src/build
     command: ["ls", "-l", "/src/build"]
 
@@ -41,6 +49,9 @@ services:
       # yours is not /dev/ttyUSB0.
       - "/dev/ttyUSB0:/dev/ttyUSB0"
     volumes:
+      # Shadows the image's /src/build, so run.py loads the host's build/
+      # directory. Populate it first: build.ps1 on the host, or the docker cp
+      # recipe at the top of this file.
       - ./build:/src/build
     # Interactive: the payload keeps running until Ctrl-C.
     stdin_open: true
