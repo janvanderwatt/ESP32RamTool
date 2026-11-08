@@ -704,10 +704,41 @@ static void cmd_rm(const char *p)
     putch_('\n');
 }
 
+/* lfs mv <old> <new> -- rename or move within the volume.
+ *
+ * Two paths, so this cannot use the single-path helper shape: both are taken
+ * with take_path, which keeps the littlefs rule that paths never begin with
+ * '/'. Anything left over is a usage error rather than a silently ignored
+ * argument, because a mistyped destination should not half-apply. */
+static void cmd_mv(const char *p)
+{
+    char from[PATH_MAX];
+    char to[PATH_MAX];
+    int err;
+
+    if (!take_path(&p, from, (int)sizeof(from)) ||
+        !take_path(&p, to, (int)sizeof(to)) || *p != '\0') {
+        puts_("usage: lfs mv <old> <new>\n");
+        return;
+    }
+
+    err = lfsvol_rename(from, to);
+    if (err) {
+        report("lfs mv", err);
+        return;
+    }
+    puts_("renamed ");
+    puts_(from);
+    puts_(" -> ");
+    puts_(to);
+    putch_('\n');
+}
+
 static void cmd_sd(const char *p)
 {
     int err = 0;
     char path[128];
+    char dest[128];
     if (word_is(&p, "init")) {
         uint8_t pins[6] = {18, 23, 19, 2, 12, 32};
 #if RAMTOOL_SD_PIN_ARGS
@@ -761,6 +792,11 @@ static void cmd_sd(const char *p)
     } else if (word_is(&p, "cat")) {
         if (!take_path_token(&p, path, sizeof(path)) || *p) goto usage;
         err = sdvol_cat(path, cat_emit, 0);
+    } else if (word_is(&p, "mv") || word_is(&p, "rename")) {
+        if (!take_path_token(&p, path, sizeof(path)) ||
+            !take_path_token(&p, dest, sizeof(dest)) || *p) goto usage;
+        err = sdvol_rename(path, dest);
+        if (!err) puts_("SD ok\n");
     } else {
         int op;
         if (word_is(&p, "put")) op = 0;
@@ -787,11 +823,11 @@ usage:
 #if RAMTOOL_SD_PIN_ARGS
     puts_("sd init [sck mosi miso cs idle-cs1 idle-cs2] (255 skips idle-cs)\n"
           "sd ls [path] | cat <path> | put/add <path> <line>\n"
-          "sd rm/mkdir <path> | rw [on|off] | off\n");
+          "sd rm/mkdir <path> | mv <old> <new> | rw [on|off] | off\n");
 #else
     puts_("sd init (fixed pins 18/23/19/2; idle CS 12/32)\n"
           "sd ls [path] | cat <path> | put/add <path> <line>\n"
-          "sd rm/mkdir <path> | rw [on|off] | off\n");
+          "sd rm/mkdir <path> | mv <old> <new> | rw [on|off] | off\n");
 #endif
 }
 
@@ -841,6 +877,8 @@ static void cmd_lfs(const char *p)
         cmd_write_line(p, 1);
     } else if (word_is(&p, "rm")) {
         cmd_rm(p);
+    } else if (word_is(&p, "mv") || word_is(&p, "rename")) {
+        cmd_mv(p);
     } else if (word_is(&p, "rw")) {
         cmd_rw(p);
     } else if (word_is(&p, "format")) {
@@ -848,6 +886,7 @@ static void cmd_lfs(const char *p)
     } else {
         puts_("lfs ls [path] | lfs ls @<offset> [path] | lfs cat <path>\n"
               "lfs put/add <path> <line> | lfs rm <path>\n"
+              "lfs mv <old> <new>\n"
               "lfs rw [on|off|@<offset> <size>] | lfs format (after 'lfs rw on')\n");
     }
 }
@@ -870,14 +909,15 @@ static void help(void)
         "  lfs put <path> <line> replace a file with one line\n"
         "  lfs add <path> <line> append one line to a file\n"
         "  lfs rm <path>        delete a file\n"
-        "  lfs rw [on|off]      unlock writing (put/add/rm/format need this)\n"
+        "  lfs mv <old> <new>   rename or move a file\n"
+        "  lfs rw [on|off]      unlock writing (put/add/rm/mv/format need this)\n"
         "  lfs format           format the unlocked littlefs volume\n"
 #if RAMTOOL_SD_PIN_ARGS
         "  sd init [pins]       mount SPI SD (18/23/19/2; idle CS 12/32)\n"
 #else
         "  sd init              mount SPI SD (18/23/19/2; idle CS 12/32)\n"
 #endif
-        "  sd ls/cat/put/add/rm/mkdir  FAT files; 'sd' for usage\n"
+        "  sd ls/cat/put/add/rm/mv/mkdir  FAT files; 'sd' for usage\n"
         "  sd rw [on|off]       separate SD write unlock\n"
         "  sd off               unmount SD and lock writing\n"
         "  reset                unmount SD and reset the chip\n"

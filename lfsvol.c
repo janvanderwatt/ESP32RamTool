@@ -791,6 +791,22 @@ int lfsvol_rm(const char *path)
     return err;
 }
 
+/* Rename, or move within the volume -- the two are the same operation here.
+ *
+ * Unlike put and add this needs no file buffer: lfs_rename only rewrites
+ * directory metadata, so the mount, the unlocked-region check and the entry
+ * update are the whole of it. */
+int lfsvol_rename(const char *from, const char *to)
+{
+    int err = lfsvol_mount_unlocked();
+    if (err) {
+        return err;
+    }
+    err = lfs_rename(&lfsvol_fs, from, to);
+    lfs_unmount(&lfsvol_fs);
+    return err;
+}
+
 /* Format the unlocked region.
  *
  * The block count is set explicitly here, unlike every mount path: lfs_format

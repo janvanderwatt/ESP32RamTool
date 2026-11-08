@@ -14,5 +14,6 @@ int sdvol_cat(const char *path, sdvol_emit_fn emit, void *ctx);
 int sdvol_line(const char *path, const char *text, int append);
 int sdvol_rm(const char *path);
 int sdvol_mkdir(const char *path);
+int sdvol_rename(const char *from, const char *to);
 const char *sdvol_error(int err);
 #endif

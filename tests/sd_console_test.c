@@ -27,6 +27,8 @@ int lfsvol_put(const char *p, const char *text)
 int lfsvol_add(const char *p, const char *text)
 { (void)p; (void)text; assert(0); return -1; }
 int lfsvol_rm(const char *p) { (void)p; assert(0); return -1; }
+int lfsvol_rename(const char *from, const char *to)
+{ (void)from; (void)to; assert(0); return -1; }
 int lfsvol_format(uint32_t *base, uint32_t *size, uint32_t *block_size)
 { (void)base; (void)size; (void)block_size; assert(0); return -1; }
 const char *lfsvol_strerror(int err) { (void)err; assert(0); return ""; }
@@ -61,11 +63,19 @@ int main(void)
     command_test("cat /TEST.TXT", "absolute path\n");
     command_test("add /TEST.TXT another line", "SD ok");
     command_test("cat /TEST.TXT", "absolute path\nanother line\n");
+    command_test("mv /TEST.TXT /RENAMED.TXT", "SD ok");
+    command_test("cat /RENAMED.TXT", "another line");
+    command_test("mv /TEST.TXT /RENAMED.TXT", "file not found");
+    command_test("mv /RENAMED.TXT", "sd init [");
+    command_test("mv /RENAMED.TXT /x.txt extra", "sd init [");
+    command_test("rm /RENAMED.TXT", "SD ok");
     command_test("mkdir /logs", "SD ok");
     command_test("put /logs/a.txt nested", "SD ok");
     command_test("ls /logs", "a.txt");
-    command_test("rm /logs/a.txt", "SD ok");
-    command_test("rm /logs", "SD ok");
+    command_test("mv /logs /renamed", "SD ok");
+    command_test("ls /renamed", "a.txt");
+    command_test("rm /renamed/a.txt", "SD ok");
+    command_test("rm /renamed", "SD ok");
     command_test("init 18 23 19 2 12 4294967328", "sd init [");
     command_test("init 18 23 19 2 12", "sd init [");
     command_test("init 18 23 19 2 12 32 garbage", "sd init [");

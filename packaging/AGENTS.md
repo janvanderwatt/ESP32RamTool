@@ -153,6 +153,7 @@ content you know when parsing `lfs cat` output automatically.
 | `lfs put <path> <line>` | —           | replace a file with one line                                                |
 | `lfs add <path> <line>` | —           | append one line                                                             |
 | `lfs rm <path>`         | —           | delete a file                                                               |
+| `lfs mv <old> <new>`    | `rename`    | rename or move a file or directory                                          |
 | `lfs rw`                | —           | report the currently unlocked write range                                   |
 | `lfs rw on`             | —           | unlock internal-flash writing; also `lfs rw on @<offset> <size>`            |
 | `lfs rw off`            | —           | lock writing                                                                |
@@ -164,6 +165,7 @@ content you know when parsing `lfs cat` output automatically.
 | `sd add <path> <line>`  | —           | append one line to an SD file                                               |
 | `sd mkdir <path>`       | —           | create one SD directory level                                               |
 | `sd rm <path>`          | —           | remove an SD file or empty directory                                        |
+| `sd mv <old> <new>`     | `rename`    | rename or move a file or directory                                          |
 | `sd rw [on\|off]`       | —           | SD write lock, separate from internal flash                                 |
 | `sd off`                | —           | unmount the card and lock writing                                           |
 | `reset`                 | —           | unmount SD and reset; the chip then boots the flashed application           |
@@ -179,7 +181,7 @@ Argument rules:
   flash controller, so it can reset or wedge the running chip.
 - Paths cannot contain spaces or tabs; there is no quoting.
 - littlefs paths are relative to the volume root and must not begin with `/` for
-  `lfs cat`, `lfs put`, `lfs add`, and `lfs rm` (`lfs cat config.csv`, not
+  `lfs cat`, `lfs put`, `lfs add`, `lfs rm`, and `lfs mv` (`lfs cat config.csv`, not
   `lfs cat /config.csv`). `lfs ls` accepts `/` for the root. Names are limited to
   63 bytes.
 - SD paths may be absolute (`/LOGS/TODAY.TXT`) and are limited to 127 bytes.
@@ -195,7 +197,7 @@ Argument rules:
 Loading the payload, running it, and reading with it write nothing to flash.
 Writing files does, and only after it is unlocked.
 
-- **littlefs** (`lfs put`, `lfs add`, `lfs rm`, `lfs format`) needs
+- **littlefs** (`lfs put`, `lfs add`, `lfs rm`, `lfs mv`, `lfs format`) needs
   `lfs rw on`, which prints the exact byte range it unlocked. Every program and
   erase is checked against that range, because littlefs takes its idea of its
   own size from the on-disk superblock without validating it. The lock is in

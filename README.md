@@ -71,6 +71,7 @@ on what it accepts.
 | `lfs put <path> <line>` | | replace a file with one line |
 | `lfs add <path> <line>` | | append one line |
 | `lfs rm <path>` | | delete a file |
+| `lfs mv <old> <new>` | `rename` | rename or move a file or directory |
 | `lfs rw` | | report the unlocked write range |
 | `lfs rw on` | | unlock internal-flash writing; `lfs rw on @<offset> <size>` for an explicit region |
 | `lfs rw off` | | lock writing |
@@ -82,6 +83,7 @@ on what it accepts.
 | `sd add <path> <line>` | | append one line to an SD file |
 | `sd mkdir <path>` | | create one SD directory level |
 | `sd rm <path>` | | remove an SD file or empty directory |
+| `sd mv <old> <new>` | `rename` | rename or move a file or directory |
 | `sd rw [on\|off]` | | the SD write lock, separate from internal flash |
 | `sd off` | | unmount the card and lock writing |
 | `reset` | | unmount SD and reset; the chip then boots the flashed application |
@@ -109,7 +111,7 @@ Argument rules that apply everywhere:
 `part`, `lfs ls`, and `lfs cat` are free. Writing files is the only thing that
 changes content, and it is gated.
 
-littlefs (`lfs put`, `lfs add`, `lfs rm`, `lfs format`) needs `lfs rw on`, which
+littlefs (`lfs put`, `lfs add`, `lfs rm`, `lfs mv`, `lfs format`) needs `lfs rw on`, which
 prints the exact byte range it unlocked and does not survive a reboot. Every
 program and erase is checked against that range, because littlefs takes its idea
 of its own size from the superblock without validating it — see
@@ -231,9 +233,9 @@ revision 3 part. The claims that matter, all checked rather than assumed:
 | base payload, no littlefs | 1,868 | 764 | 72 | 2,048 | 4,752 |
 | read-only (`part`, `lfs ls`, `lfs cat`) | 17,988 | 1,744 | 592 | 2,048 | 22,372 |
 | with writing (`lfs put`, `lfs add`, `lfs rm`) | 19,728 | 2,348 | 992 | 2,048 | **25,116** |
-| with SPI SD / FatFs (current release) | 32,444 | 5,040 | 2,600 | 2,048 | **42,132** |
+| with SPI SD / FatFs (current release) | 32,776 | 5,176 | 2,600 | 2,048 | **42,600** |
 
-The current release uses 41.1 KiB of the 92 KiB the two windows offer.
+The current release uses 41.6 KiB of the 92 KiB the two windows offer.
 The figures above include the reserved stack; linker assertions enforce both
 memory windows. Filesystem objects and working buffers are static, with no heap.
 

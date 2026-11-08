@@ -107,6 +107,11 @@ int sdvol_mkdir(const char *path)
     int r = check(1);
     return r ? r : finish(f_mkdir(path));
 }
+int sdvol_rename(const char *from, const char *to)
+{
+    int r = check(1);
+    return r ? r : finish(f_rename(from, to));
+}
 const char *sdvol_error(int err)
 {
     switch (err) {

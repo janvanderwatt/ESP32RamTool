@@ -97,6 +97,13 @@ int lfsvol_add(const char *path, const char *text);
 /* Delete `path`. Fails if it is a directory or does not exist. */
 int lfsvol_rm(const char *path);
 
+/* Rename or move `from` to `to`. Needs the same unlock as rm.
+ *
+ * A file may replace an existing file; the types must match, and a directory
+ * destination must be empty. littlefs does this as an atomic metadata update,
+ * so an interrupted rename does not leave a half-moved entry. */
+int lfsvol_rename(const char *from, const char *to);
+
 /* Format the region unlocked by lfsvol_write_enable.
  *
  * This is a logical format, not an erase: lfs_format writes a fresh superblock
