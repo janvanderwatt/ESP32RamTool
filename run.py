@@ -45,7 +45,9 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
+import re
 import struct
 import sys
 import threading
@@ -169,6 +171,176 @@ def read_console(port, stop: threading.Event) -> None:
 
 
 # --------------------------------------------------------------------------
+# non-interactive scripts
+# --------------------------------------------------------------------------
+
+PROMPT = b"> "
+
+# The payload's own end-of-reply marker for the two commands that take the chip
+# away. Neither prints a prompt afterwards, so waiting for one would hang until
+# the timeout and report a failure that had already succeeded.
+TERMINAL_MARKERS = {
+    "reset": b"resetting...\n",
+    "reboot": b"rebooting into download mode\n",
+    "x": b"rebooting into download mode\n",
+}
+
+# The console has no status codes, so a failure is recognised from the payload's
+# own error shapes. A wrong command that still answered would be worse than a
+# missing reply, which is why these are checked rather than assumed away.
+ERROR_PATTERNS = (
+    re.compile(r"^(?:lfs \w+|SD): .*\(\d+\)\s*$", re.M),
+    re.compile(r"^usage: ", re.M),
+    re.compile(r"^unknown\. 'help'\s*$", re.M),
+    re.compile(r"^lfs (?:put|add) needs some text\s*$", re.M),
+    re.compile(r"^pin out of range", re.M),
+)
+
+# payload.c keeps LINE_MAX at 200 and cuts longer input silently. A script that
+# relies on a longer line would appear to work while writing a truncated record.
+CONSOLE_LINE_LIMIT = 199
+
+
+def read_until(port, marker: bytes, timeout: float, anywhere: bool = False) -> bytes | None:
+    """Read until `marker` arrives, or return None on timeout.
+
+    `anywhere` is for the two terminal commands. They reset the chip, which then
+    boots the flashed application at its own console rate, so bytes after the
+    confirmation can arrive as line noise at this port's rate. Waiting for the
+    marker to be the *last* thing read never fires on a real reset; a prompt
+    must still be, because the console emits nothing after it until asked.
+    """
+    buf = bytearray()
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        try:
+            chunk = port.read(256)
+        except Exception:
+            return None
+        if not chunk:
+            continue
+        buf += chunk
+        seen = marker in bytes(buf) if anywhere else bytes(buf).endswith(marker)
+        if seen:
+            return bytes(buf)
+
+    return None
+
+
+def load_script(path: str) -> list[str]:
+    """One command per line; blank lines and `#` comments ignored."""
+    if not os.path.exists(path):
+        raise SystemExit(f"script not found: {path}")
+
+    commands: list[str] = []
+    with open(path, "r", encoding="ascii", errors="replace") as fh:
+        for number, raw in enumerate(fh, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if len(line) > CONSOLE_LINE_LIMIT:
+                raise SystemExit(
+                    f"{path}:{number}: {len(line)} bytes exceeds the payload's "
+                    f"{CONSOLE_LINE_LIMIT}-byte command line; it would be cut silently")
+            commands.append(line)
+
+    if not commands:
+        raise SystemExit(f"script is empty: {path}")
+
+    for number, command in enumerate(commands, 1):
+        word = command.split(" ", 1)[0].lower()
+        if word in TERMINAL_MARKERS and number != len(commands):
+            raise SystemExit(
+                f"{path}:{number}: '{word}' ends the payload, so commands after it "
+                "can never run")
+
+    return commands
+
+
+def clean_reply(text: str, command: str, terminal: bool) -> str:
+    """Strip the console's echo and next prompt from a command's reply."""
+    text = text.replace("\r\n", "\n")
+    echo = command + "\n"
+    if text.startswith(echo):
+        text = text[len(echo):]
+    if not terminal and text.endswith("> "):
+        text = text[:-2]
+    return text
+
+
+def run_script(port, commands: list[str], command_timeout: float) -> tuple[list[dict], str | None]:
+    """Feed one command at a time, waiting for the prompt between each.
+
+    The pacing is not a nicety: the console has no flow control and a 128-byte
+    receive FIFO, and a flash write does not drain it. Sending the next command
+    early loses characters silently, which looks like a flaky link.
+    """
+    results: list[dict] = []
+
+    banner = read_until(port, PROMPT, 20.0)
+    if banner is None:
+        return results, "no '> ' prompt from the payload"
+
+    for command in commands:
+        word = command.split(" ", 1)[0].lower()
+        terminal = word in TERMINAL_MARKERS
+        marker = TERMINAL_MARKERS.get(word, PROMPT)
+
+        port.write((command + "\n").encode("ascii", errors="replace"))
+        raw = read_until(port, marker, command_timeout, anywhere=terminal)
+
+        text = "" if raw is None else raw.decode("latin-1")
+        output = clean_reply(text, command, terminal)
+        if terminal and output:
+            # Everything after the confirmation is whatever the chip booted
+            # into, not this command's reply.
+            output = output[:output.index(marker.decode("latin-1")) + len(marker)]
+
+        error = None
+        if raw is None:
+            error = f"no reply within {command_timeout:g}s"
+        else:
+            for pattern in ERROR_PATTERNS:
+                found = pattern.search(output)
+                if found:
+                    error = found.group(0).strip()
+                    break
+
+        results.append({
+            "command": command,
+            "ok": error is None,
+            "output": output,
+            "error": error,
+            "terminal": terminal,
+        })
+
+        if terminal:
+            break
+
+    return results, None
+
+
+def write_script_result(path: str, port: str, script: str, results: list[dict],
+                        problem: str | None) -> bool:
+    """Write the JSON document and return whether every command succeeded."""
+    ok = problem is None and all(item["ok"] for item in results)
+    document = {
+        "port": port,
+        "script": os.path.abspath(script),
+        "ok": ok,
+        "problem": problem,
+        "commands": results,
+    }
+
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(document, fh, indent=2)
+        fh.write("\n")
+
+    return ok
+
+
+# --------------------------------------------------------------------------
 # locating esptool
 # --------------------------------------------------------------------------
 
@@ -288,7 +460,36 @@ def main() -> int:
                     help="stay attached and print payload output for N seconds")
     ap.add_argument("--boot", action="store_true",
                     help="reset into the download bootloader and stop there")
+    ap.add_argument("--script", metavar="FILE",
+                    help="run a command script non-interactively, one command per line, "
+                         "waiting for the prompt between each")
+    ap.add_argument("--json", metavar="FILE",
+                    help="write the script's per-command results as JSON (with --script)")
+    ap.add_argument("--command-timeout", type=float, default=60.0, metavar="N",
+                    help="seconds to wait for each command's reply in script mode")
+    ap.add_argument("--check", action="store_true",
+                    help="report whether the payload and an esptool that can launch it are "
+                         "available, then exit without touching hardware")
     args = ap.parse_args()
+
+    if args.json and not args.script:
+        ap.error("--json needs --script")
+    if args.script and args.seconds > 0:
+        ap.error("--script and --seconds are different modes; pick one")
+
+    # A dry check, so an automation can report a missing esptool or a missing
+    # payload before an operator is standing at a board. It resolves exactly the
+    # way a real run does, which is the point: esptool is often only present in
+    # an ESP-IDF environment that run.py finds by itself.
+    if args.check:
+        for name in ("iram.bin", "dram.bin", "manifest.txt"):
+            if not os.path.exists(os.path.join(BUILD, name)):
+                print(f"missing {os.path.join(BUILD, name)}\nrun build.ps1 first", file=sys.stderr)
+                return 2
+        import_esp32rom()
+        print(f"payload: {BUILD}")
+        print("esptool: available")
+        return 0
 
     if args.port is None:
         args.port = default_port()
@@ -389,6 +590,30 @@ def main() -> int:
 
     port.timeout = 0.05
     stop = threading.Event()
+
+    if args.script:
+        print(f"\nrunning script {args.script} (one command per line)")
+        commands = load_script(args.script)
+        results, problem = run_script(port, commands, args.command_timeout)
+
+        stop.set()
+        port.close()
+
+        for item in results:
+            mark = "ok  " if item["ok"] else "FAIL"
+            print(f"  {mark} {item['command'][:80]}")
+            if item["error"]:
+                print(f"       {item['error']}")
+        if problem:
+            print(f"script failed: {problem}")
+
+        ok = all(item["ok"] for item in results) and problem is None
+        if args.json:
+            ok = write_script_result(args.json, args.port, args.script, results, problem)
+            print(f"result written to {args.json}")
+
+        return 0 if ok else 1
+
     reader = threading.Thread(target=read_console, args=(port, stop), daemon=True)
     reader.start()
 

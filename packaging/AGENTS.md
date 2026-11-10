@@ -43,6 +43,11 @@ the only serial port it can find, and asks when there is more than one.
 
 - `--seconds N` — stay attached for N seconds, then exit.
 - `--boot` — reset the chip into the download bootloader and stop there.
+- `--script FILE` — run a command script non-interactively (see below).
+- `--json FILE` — with `--script`, write each command's result as JSON.
+- `--command-timeout N` — seconds to wait for each reply in script mode.
+- `--check` — report whether the payload and an esptool that can launch it are
+  present, then exit without touching hardware.
 - Ctrl-C — detach. The payload keeps running either way.
 
 `run.py` never resets the chip on the way out and never writes flash. It launches
@@ -69,6 +74,45 @@ those write flash and reset the chip when they finish.
   never send the next command until the prompt for the previous one arrives.
   Blasting a batch of commands silently loses characters and produces mangled
   commands that look like a flaky link.
+
+### Non-interactive scripts
+
+`run.py --script FILE` loads the payload and feeds one command per line, waiting
+for the `> ` prompt after each one before sending the next. Blank lines and lines
+beginning with `#` are ignored. The pacing is the point: the console has no flow
+control, and a flash write does not drain its 128-byte receive FIFO, so a blasted
+batch loses characters silently.
+
+```sh
+python run.py --port COM7 --script write.txt --json result.json
+```
+
+```text
+lfs rw on
+lfs put config.csv 1,2,3
+lfs cat config.csv
+lfs rw off
+reset
+```
+
+Rules that the loader enforces before sending anything:
+
+- a command longer than 199 bytes is refused, because the payload cuts longer
+  input at that limit and would write a truncated record;
+- `reset` and `reboot` must be the last command — the payload is gone afterwards
+  and no later command can run.
+
+The JSON document carries `ok`, `problem`, and a `commands` array of
+`{command, ok, output, error, terminal}`. `output` has the console's echo and the
+next prompt stripped, so it is the command's own reply — which is how a readback
+such as `lfs cat` is compared byte-for-byte. A command fails when its reply
+matches one of the payload's error shapes (`lfs put: ... (n)`, `usage: ...`,
+`unknown. 'help'`, and so on), or when no reply arrives inside
+`--command-timeout`. Exit codes: 0 every command succeeded, 1 a command failed or
+timed out, 2 the payload could not be loaded.
+
+Scripts write flash only if they say so: `lfs rw on` is still required, and the
+unlock does not survive the reset at the end.
 
 ### Fast path: one bounded attached session
 

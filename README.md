@@ -161,8 +161,21 @@ see [Verified on hardware](#verified-on-hardware).
 
 ## Scripting and the distribution
 
-`run.py` is an interactive console, not a command runner, so the simplest
-automation is a bounded session:
+`run.py` is an interactive console by default; for automation it takes a script
+of one command per line and waits for the prompt between commands:
+
+```sh
+python run.py --port COM7 --script commands.txt --json result.json
+```
+
+`result.json` holds one entry per command with its reply (echo and prompt
+stripped), whether it succeeded, and the payload's error text when it did not.
+Commands longer than the console's 199-byte line limit are refused rather than
+truncated, and `reset`/`reboot` must be last. See [scripting and the
+distribution](#scripting-and-the-distribution).
+
+For a handful of commands, a bounded attached session is still the shortest
+route:
 
 ```sh
 printf 'info\npart\nlfs ls\n' | python run.py --port COM7 --seconds 5
